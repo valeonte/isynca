@@ -2,13 +2,22 @@
 
 These implement the protocols in :mod:`isynca.icloud.protocols`, so every
 layer above the adapters is exercised without a socket in sight.
+
+Both upload paths are modelled, because isynca uses both: registrations
+through :class:`FakeDirectClient` normally, and the waiting
+:meth:`FakePhotosService.upload` when an account exposes no CloudKit client.
+Whichever path runs, the file lands in ``FakePhotosService.uploaded``, so a
+test asserting nothing was re-sent still means it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from pyicloud.common.cloudkit.client import CloudKitApiError
 from pyicloud.exceptions import PyiCloudAPIResponseException
+
+from isynca.icloud.protocols import PhotoAssetLike
 
 
 @dataclass
@@ -19,12 +28,40 @@ class FakeAsset:
     master_id: str
     filename: str
 
+    @property
+    def asset_id(self) -> str:
+        """Return the asset record name."""
+        return self.id
+
+
+@dataclass
+class FakeRegistration:
+    """A ``putAsset`` result, using Apple's own field names."""
+
+    cplMaster: str | None = None  # noqa: N815 - Apple's field name
+    cplAsset: str | None = None  # noqa: N815 - Apple's field name
+    duplicate: bool = False
+
+    @property
+    def is_duplicate(self) -> bool:
+        """Return whether iCloud reported it already held the content."""
+        return self.duplicate
+
 
 @dataclass
 class FakeAlbum:
     """A minimal album."""
 
     name: str
+    added: list[str] = field(default_factory=list)
+    add_error: Exception | None = None
+
+    def add_photo(self, photo: PhotoAssetLike) -> bool:
+        """Record which asset was filed into this album."""
+        if self.add_error is not None:
+            raise self.add_error
+        self.added.append(photo.asset_id)
+        return True
 
 
 @dataclass
@@ -42,20 +79,56 @@ class FakeAlbumContainer:
 
 
 @dataclass
+class FakeDirectClient:
+    """The CloudKit client, registering uploads without waiting on indexing.
+
+    Results are scripted on the service rather than here, so a test can drive
+    either upload path with the same ``upload_results`` list. A scripted
+    ``None`` -- pyicloud's "accepted but not indexed" -- becomes a
+    registration with no record names, which is this path's equivalent.
+    """
+
+    service: FakePhotosService
+    zones: list[str] = field(default_factory=list)
+
+    def upload_file(self, path: str, *, zone_name: str) -> FakeRegistration:
+        """Register an upload and return the next scripted result."""
+        self.zones.append(zone_name)
+        result = self.service.next_result(path, album=None)
+        if result is None:
+            return FakeRegistration()
+        if isinstance(result, FakeRegistration):
+            return result
+        return FakeRegistration(cplMaster=result.master_id, cplAsset=result.id)
+
+
+@dataclass
 class FakePhotosService:
     """A photos service that records uploads instead of performing them."""
 
     album_container: FakeAlbumContainer = field(default_factory=FakeAlbumContainer)
     uploaded: list[tuple[str, str | None]] = field(default_factory=list)
-    upload_results: list[FakeAsset | Exception | None] = field(default_factory=list)
+    upload_results: list[FakeAsset | FakeRegistration | Exception | None] = field(
+        default_factory=list
+    )
     create_returns_none: bool = False
     create_error: Exception | None = None
     counter: int = 0
+    has_direct_client: bool = True
+
+    def __post_init__(self) -> None:
+        """Give the service its own client, which reads results back off it."""
+        self.direct_client = FakeDirectClient(self)
 
     @property
     def albums(self) -> FakeAlbumContainer:
         """Return the album container."""
         return self.album_container
+
+    @property
+    def private_client(self) -> FakeDirectClient | None:
+        """Return the CloudKit client, or ``None`` to force the waiting path."""
+        return self.direct_client if self.has_direct_client else None
 
     def create_album(self, name: str) -> FakeAlbum | None:
         """Create and register an album."""
@@ -67,12 +140,14 @@ class FakePhotosService:
         self.album_container.albums[name] = album
         return album
 
-    def upload(self, path: str, *, album: str | None = None) -> FakeAsset | None:
+    def next_result(
+        self, path: str, *, album: str | None
+    ) -> FakeAsset | FakeRegistration | None:
         """Record an upload and return the next scripted result.
 
         ``upload_results`` is consumed in order; each entry is either an
-        exception to raise, ``None`` to simulate an un-indexed upload, or an
-        asset to return. An empty list means "always succeed".
+        exception to raise, ``None`` to simulate an un-indexed upload, or a
+        result to return. An empty list means "always succeed".
         """
         self.uploaded.append((path, album))
         self.counter += 1
@@ -88,6 +163,13 @@ class FakePhotosService:
             master_id=f"master-{self.counter}",
             filename=path.rsplit("/", 1)[-1],
         )
+
+    def upload(self, path: str, *, album: str | None = None) -> FakeAsset | None:
+        """Upload the pyicloud way, waiting for an asset that may never come."""
+        result = self.next_result(path, album=album)
+        if isinstance(result, FakeRegistration):  # pragma: no cover - path unused
+            return None
+        return result
 
 
 @dataclass
@@ -125,3 +207,8 @@ class FakeSession:
 def api_error(message: str) -> PyiCloudAPIResponseException:
     """Build a pyicloud API error carrying ``message``."""
     return PyiCloudAPIResponseException(message)
+
+
+def cloudkit_error(message: str) -> CloudKitApiError:
+    """Build a CloudKit error carrying ``message``."""
+    return CloudKitApiError(message)

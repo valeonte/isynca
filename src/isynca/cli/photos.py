@@ -218,7 +218,12 @@ def _run(
 
     with Ledger(config.ledger_path) as ledger:
         plan = _build_plan(
-            scanner, ledger, sources, limit, console, config.require_date_taken
+            scanner,
+            ledger,
+            sources,
+            limit,
+            app_ctx.err_console,
+            config.require_date_taken,
         )
         _print_missing_dates(console, plan)
 
@@ -243,7 +248,7 @@ def _run(
             )
             uploader = PhotosUploader(api, album=config.album)
 
-        report = _execute(plan, uploader, ledger, config, console, archiver)
+        report = _execute(plan, uploader, ledger, config, app_ctx.err_console, archiver)
 
     _print_report(console, report)
     if not report.ok:
@@ -283,7 +288,11 @@ def _build_plan(
     console: Console,
     require_date_taken: bool = False,
 ) -> UploadPlan:
-    """Scan and plan, showing a spinner because hashing can take a while."""
+    """Scan and plan, showing a spinner because hashing can take a while.
+
+    The spinner draws on the console logging shares, so a warning raised while
+    hashing lands above it rather than through it.
+    """
     planner = Planner(ledger, require_capture_date=require_date_taken)
     plan = UploadPlan()
 
@@ -325,14 +334,18 @@ def _execute(
     ) as progress:
         task = progress.add_task("Uploading", total=len(plan.pending))
 
-        def advance(item: PlannedUpload, _status: UploadStatus | None) -> None:
-            progress.update(task, advance=1, description=f"Uploading {item.path.name}")
+        def starting(item: PlannedUpload) -> None:
+            progress.update(task, description=f"Uploading {item.path.name}")
+
+        def advance(_item: PlannedUpload, _status: UploadStatus | None) -> None:
+            progress.update(task, advance=1)
 
         runner = UploadRunner(
             uploader=uploader,
             ledger=ledger,
             dry_run=config.dry_run,
             archiver=archiver,
+            on_start=starting,
             progress=advance,
         )
         return runner.run(plan)

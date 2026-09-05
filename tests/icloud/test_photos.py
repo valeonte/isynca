@@ -10,7 +10,13 @@ from pyicloud.exceptions import (
 from isynca.errors import AlbumNotFoundError, UploadError
 from isynca.icloud.photos import PhotosUploader
 from isynca.ledger.store import UploadStatus
-from tests.fakes.icloud import FakeAlbum, FakeAsset, FakeSession
+from tests.fakes.icloud import (
+    FakeAlbum,
+    FakeAsset,
+    FakeRegistration,
+    FakeSession,
+    cloudkit_error,
+)
 
 
 def test_upload_to_root_library(session):
@@ -23,32 +29,38 @@ def test_upload_to_root_library(session):
     assert session.photos_service.uploaded == [("/videos/a.mp4", None)]
 
 
-def test_none_result_means_uploaded_but_unindexed(session):
-    """Pyicloud returns None when CloudKit has not indexed the record yet.
+def test_upload_registers_into_the_primary_zone(session):
+    """The bytes go to the account's own library, not a shared one."""
+    PhotosUploader(session).upload(Path("/videos/a.mp4"))
 
-    That is a success: re-sending the bytes next run would be pure waste.
-    """
-    session.photos_service.upload_results = [None]
-    outcome = PhotosUploader(session).upload(Path("/videos/a.mp4"))
-
-    assert outcome.status is UploadStatus.UNVERIFIED
-    assert outcome.asset_id is None
+    assert session.photos_service.direct_client.zones == ["PrimarySync"]
 
 
 def test_existing_album_is_reused(session):
-    session.photos_service.album_container.albums["Trip"] = FakeAlbum("Trip")
+    album = FakeAlbum("Trip")
+    session.photos_service.album_container.albums["Trip"] = album
     uploader = PhotosUploader(session, album="Trip")
-    uploader.upload(Path("/videos/a.mp4"))
+    outcome = uploader.upload(Path("/videos/a.mp4"))
 
-    assert session.photos_service.uploaded == [("/videos/a.mp4", "Trip")]
+    assert session.photos_service.uploaded == [("/videos/a.mp4", None)]
+    assert album.added == [outcome.asset_id]
 
 
 def test_missing_album_is_created(session):
     uploader = PhotosUploader(session, album="New")
-    uploader.upload(Path("/videos/a.mp4"))
+    outcome = uploader.upload(Path("/videos/a.mp4"))
 
-    assert "New" in session.photos_service.album_container.albums
-    assert session.photos_service.uploaded == [("/videos/a.mp4", "New")]
+    created = session.photos_service.album_container.albums["New"]
+    assert created.added == [outcome.asset_id]
+
+
+def test_album_membership_failure_is_reported(session):
+    """The bytes are in iCloud; only the album relation failed."""
+    session.photos_service.album_container.albums["Trip"] = FakeAlbum(
+        "Trip", add_error=cloudkit_error("relation rejected")
+    )
+    with pytest.raises(UploadError, match="could not be added to 'Trip'"):
+        PhotosUploader(session, album="Trip").upload(Path("/videos/a.mp4"))
 
 
 def test_album_is_resolved_once_across_uploads(session):
@@ -86,20 +98,89 @@ def test_album_lookup_error_is_fatal(session):
         PhotosUploader(session, album="Trip").upload(Path("/a.mp4"))
 
 
-def test_duplicate_response_is_reported_not_raised(session):
+def test_duplicate_registration_is_reported_not_raised(session):
+    """Apple flags a duplicate outright, so nothing has to read the message."""
     session.photos_service.upload_results = [
+        FakeRegistration(cplMaster="m1", cplAsset="a1", duplicate=True)
+    ]
+    outcome = PhotosUploader(session).upload(Path("/a.mp4"))
+
+    assert outcome.status is UploadStatus.DUPLICATE
+    assert (outcome.master_id, outcome.asset_id) == ("m1", "a1")
+
+
+def test_registration_without_record_names_is_unverified(session):
+    session.photos_service.upload_results = [FakeRegistration()]
+    outcome = PhotosUploader(session).upload(Path("/a.mp4"))
+
+    assert outcome.status is UploadStatus.UNVERIFIED
+    assert outcome.asset_id is None
+
+
+def test_cloudkit_error_becomes_upload_error(session):
+    session.photos_service.upload_results = [cloudkit_error("putAsset rejected it")]
+    with pytest.raises(UploadError, match=r"Upload of /a\.mp4 failed"):
+        PhotosUploader(session).upload(Path("/a.mp4"))
+
+
+@pytest.fixture
+def slow_session(session):
+    """A session with no CloudKit client, forcing pyicloud's waiting upload."""
+    session.photos_service.has_direct_client = False
+    return session
+
+
+def test_upload_falls_back_to_the_waiting_call(slow_session):
+    outcome = PhotosUploader(slow_session).upload(Path("/videos/a.mp4"))
+
+    assert outcome.status is UploadStatus.CONFIRMED
+    assert slow_session.photos_service.uploaded == [("/videos/a.mp4", None)]
+
+
+def test_fallback_passes_the_album_by_name(slow_session):
+    """The waiting call resolves the album itself, so it is given the name."""
+    PhotosUploader(slow_session, album="Trip").upload(Path("/videos/a.mp4"))
+
+    assert slow_session.photos_service.uploaded == [("/videos/a.mp4", "Trip")]
+
+
+def test_fallback_none_result_is_unverified(slow_session):
+    slow_session.photos_service.upload_results = [None]
+    outcome = PhotosUploader(slow_session).upload(Path("/a.mp4"))
+
+    assert outcome.status is UploadStatus.UNVERIFIED
+    assert outcome.asset_id is None
+
+
+def test_duplicate_response_is_reported_not_raised(slow_session):
+    """Without the duplicate flag, the error message is the only signal."""
+    slow_session.photos_service.upload_results = [
         PyiCloudAPIResponseException("409 duplicate asset")
     ]
-    outcome = PhotosUploader(session).upload(Path("/a.mp4"))
+    outcome = PhotosUploader(slow_session).upload(Path("/a.mp4"))
     assert outcome.status is UploadStatus.DUPLICATE
 
 
-def test_already_exists_message_is_a_duplicate(session):
-    session.photos_service.upload_results = [
+def test_already_exists_message_is_a_duplicate(slow_session):
+    slow_session.photos_service.upload_results = [
         PyiCloudAPIResponseException("Asset already exists in library")
     ]
-    outcome = PhotosUploader(session).upload(Path("/a.mp4"))
+    outcome = PhotosUploader(slow_session).upload(Path("/a.mp4"))
     assert outcome.status is UploadStatus.DUPLICATE
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (PyiCloudAPIResponseException("500 server exploded"), "failed"),
+        (PyiCloudException("session died"), "failed"),
+        (OSError("disk vanished"), "Could not read"),
+    ],
+)
+def test_fallback_errors_become_upload_errors(slow_session, error, message):
+    slow_session.photos_service.upload_results = [error]
+    with pytest.raises(UploadError, match=message):
+        PhotosUploader(slow_session).upload(Path("/a.mp4"))
 
 
 def test_api_error_becomes_upload_error(session):

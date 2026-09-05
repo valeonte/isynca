@@ -8,6 +8,7 @@ from isynca.ledger.store import UploadStatus
 from isynca.sync.archiver import Archiver
 from isynca.sync.planner import PlannedUpload, SkippedUpload, SkipReason, UploadPlan
 from isynca.sync.runner import RetryPolicy, UploadRunner
+from tests.fakes.icloud import FakeRegistration
 
 
 def plan_with(*media, skipped=()):
@@ -52,13 +53,28 @@ def test_unverified_result_is_still_recorded(session, ledger, make_media):
 
 def test_duplicate_result_is_recorded(session, ledger, make_media):
     session.photos_service.upload_results = [
-        PyiCloudAPIResponseException("duplicate asset")
+        FakeRegistration(cplMaster="m1", cplAsset="a1", duplicate=True)
     ]
     media = make_media()
     report = build(session, ledger).run(plan_with(media))
 
     assert report.duplicate == 1
     assert ledger.lookup(hash_file(media.path)).status is UploadStatus.DUPLICATE
+
+
+def test_start_hook_fires_before_the_upload(session, ledger, make_media):
+    """A bar told only about finished files names the wrong one while it works."""
+    events = []
+    media = make_media()
+    runner = build(
+        session,
+        ledger,
+        on_start=lambda item: events.append(("start", item.path.name)),
+        progress=lambda item, status: events.append(("done", item.path.name)),
+    )
+    runner.run(plan_with(media))
+
+    assert events == [("start", media.path.name), ("done", media.path.name)]
 
 
 def test_skipped_items_are_counted(session, ledger, make_media):
@@ -213,7 +229,7 @@ def test_confirmed_upload_is_moved_to_the_target(session, ledger, tmp_path, make
 def test_duplicate_is_moved_too(session, ledger, tmp_path, make_media):
     """ICloud already holding the content is just as good as uploading it."""
     session.photos_service.upload_results = [
-        PyiCloudAPIResponseException("duplicate asset")
+        FakeRegistration(cplMaster="m1", cplAsset="a1", duplicate=True)
     ]
     target = tmp_path / "archive"
     media = make_media(name="clip.mp4")

@@ -116,8 +116,9 @@ def test_dry_run_needs_no_credentials(invoke, tree, monkeypatch):
 
 def test_upload_into_an_album(invoke, tree, fake_icloud):
     invoke("--apple-id", ACCOUNT, "photos", "upload", str(tree), "--album", "Trip")
-    assert all(album == "Trip" for _, album in fake_icloud.photos_service.uploaded)
-    assert "Trip" in fake_icloud.photos_service.album_container.albums
+    albums = fake_icloud.photos_service.album_container.albums
+    assert "Trip" in albums
+    assert len(albums["Trip"].added) == len(fake_icloud.photos_service.uploaded) == 3
 
 
 def test_limit_caps_the_number_of_uploads(invoke, tree, fake_icloud):

@@ -80,8 +80,13 @@ def main_callback(
         settings = settings.with_overrides(
             apple_id=icloud_session.recall_account(settings.data_dir)
         )
-    configure(verbose=settings.verbose)
-    ctx.obj = AppContext(config=settings, console=Console())
+    # One stderr console for both logging and progress bars: rich keeps a
+    # live display and printed output from overwriting each other only when
+    # they share a console, and two of them is what smears log lines across
+    # the upload bar.
+    err_console = Console(stderr=True)
+    configure(verbose=settings.verbose, console=err_console)
+    ctx.obj = AppContext(config=settings, console=Console(), err_console=err_console)
 
 
 def main() -> int:

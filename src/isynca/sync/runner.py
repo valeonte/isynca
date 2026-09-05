@@ -32,6 +32,13 @@ from isynca.sync.report import RunReport
 LOGGER = get_logger("runner")
 
 ProgressHook = Callable[[PlannedUpload, UploadStatus | None], None]
+StartHook = Callable[[PlannedUpload], None]
+"""Called with each file as its upload begins.
+
+Separate from :data:`ProgressHook`, which fires once the outcome is known: a
+progress bar that only heard about finished files would name the file it has
+just stopped working on.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +65,7 @@ class UploadRunner:
         dry_run: bool = False,
         archiver: Archiver | None = None,
         retry: RetryPolicy | None = None,
+        on_start: StartHook | None = None,
         progress: ProgressHook | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -66,6 +74,7 @@ class UploadRunner:
         self._dry_run = dry_run
         self._archiver = archiver
         self._retry = retry or RetryPolicy()
+        self._on_start = on_start
         self._progress = progress
         self._sleep = sleep
 
@@ -114,6 +123,9 @@ class UploadRunner:
 
     def _process(self, item: PlannedUpload, report: RunReport) -> None:
         """Upload one file, record the outcome, and update the report."""
+        if self._on_start is not None:
+            self._on_start(item)
+
         if self._dry_run:
             LOGGER.info("Would upload %s", item.path)
             # A preview assumes the upload would succeed, so the archive step
@@ -139,7 +151,7 @@ class UploadRunner:
             asset_id=outcome.asset_id,
         )
         report.record_status(outcome.status, item.size)
-        LOGGER.info("%s: %s", item.path.name, outcome.status)
+        LOGGER.debug("%s: %s", item.path.name, outcome.status)
         self._archive(item.media, outcome.status, report)
         self._notify(item, outcome.status)
 
@@ -179,4 +191,4 @@ class UploadRunner:
             self._progress(item, status)
 
 
-__all__ = ["ProgressHook", "RetryPolicy", "UploadRunner"]
+__all__ = ["ProgressHook", "RetryPolicy", "StartHook", "UploadRunner"]
