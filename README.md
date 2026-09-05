@@ -2,16 +2,16 @@
 
 A modular toolkit for iCloud operations, built on [pyicloud](https://github.com/timlaing/pyicloud).
 
-The first capability is bulk upload of video files from a local folder tree into
-iCloud Photos, with a local ledger so re-runs skip what is already there.
+The first capability is bulk upload of photos and video from a local folder tree
+into iCloud Photos, with a local ledger so re-runs skip what is already there.
 
 ## Quick start
 
 ```bash
 pixi install
 pixi run isynca auth login --apple-id you@example.com
-pixi run isynca photos upload ~/Videos --dry-run
-pixi run isynca photos upload ~/Videos
+pixi run isynca photos upload ~/Media --dry-run
+pixi run isynca photos upload ~/Media
 ```
 
 ## Commands
@@ -28,12 +28,20 @@ pixi run isynca photos upload ~/Videos
 | `isynca ledger forget PATH` | Drop one file's record so it uploads again |
 | `isynca ledger prune` | Remove cache rows for files that no longer exist |
 
-## Scope: video only
+## What gets uploaded
 
-iCloud Photos ingests images and video. It has no concept of a standalone audio
-asset, so audio files are not uploadable and `isynca` does not scan for them.
-The extension tables in `media/types.py` are keyed by media kind, so enabling
-images is a one-line change if you want it.
+Images and video are both included by default. Either kind can be switched off:
+
+```bash
+isynca photos upload ~/Media --no-images   # video only
+isynca photos upload ~/Media --no-videos   # images only
+```
+
+Switching off both is rejected rather than silently matching nothing.
+
+Audio is never uploaded. iCloud Photos ingests images and video and has no
+concept of a standalone audio asset, so audio files are not uploadable and
+`isynca` does not scan for them.
 
 ## How re-runs stay cheap
 
@@ -45,8 +53,9 @@ Uploading re-reads and re-sends every byte, which is expensive for video, so
 - `uploads` records results keyed by **content hash**, so a file that has been
   renamed or moved is still recognised as already uploaded.
 
-Each result is committed as soon as its upload returns, so an interrupted run
-resumes without re-sending what already made it across.
+Uploads run one file at a time. Each result is committed as soon as its upload
+returns, so an interrupted run resumes without re-sending what already made it
+across.
 
 Records carry one of three statuses. `confirmed` means iCloud returned the
 created asset. `duplicate` means iCloud reported it already held that content.
@@ -63,19 +72,15 @@ Settings resolve lowest-to-highest from: built-in defaults, `config.toml`,
 # ~/.config/isynca/config.toml
 [isynca]
 apple_id = "you@example.com"
-album = "Imported Video"
+album = "Imported Media"
+images = true
+videos = true
 min_size = 1024
 exclude = ["*/.Trash/*", "*.partial"]
 ```
 
 State lives under the XDG directories: the ledger and session cookies in
 `~/.local/share/isynca/`, configuration in `~/.config/isynca/`.
-
-## Concurrency
-
-Uploads run sequentially by default. The pyicloud session is shared mutable
-state with no documented thread-safety guarantee, so `--concurrency N` is
-opt-in rather than the default.
 
 ## Development
 

@@ -21,24 +21,45 @@ def uploads(fake):
     return sorted(path.rsplit("/", 1)[-1] for path, _ in fake.photos_service.uploaded)
 
 
-def test_scan_lists_video_only(invoke, tree):
+def test_scan_lists_video_and_images_by_default(invoke, tree):
     result = invoke("photos", "scan", str(tree))
     assert result.exit_code == 0
     assert "a.mp4" in result.output
     assert "b.mov" in result.output
+    assert "photo.jpg" in result.output
     assert "song.mp3" not in result.output
+    assert "3 file(s)" in result.output
+
+
+def test_scan_can_exclude_images(invoke, tree):
+    result = invoke("photos", "scan", str(tree), "--no-images")
+    assert "photo.jpg" not in result.output
+    assert "a.mp4" in result.output
     assert "2 file(s)" in result.output
 
 
-def test_scan_can_include_images(invoke, tree):
-    result = invoke("photos", "scan", str(tree), "--include-images")
+def test_scan_can_exclude_videos(invoke, tree):
+    result = invoke("photos", "scan", str(tree), "--no-videos")
+    assert "a.mp4" not in result.output
+    assert "b.mov" not in result.output
     assert "photo.jpg" in result.output
+    assert "1 file(s)" in result.output
+
+
+def test_scan_kinds_can_be_re_enabled_explicitly(invoke, tree):
+    result = invoke("photos", "scan", str(tree), "--videos", "--images")
+    assert "3 file(s)" in result.output
+
+
+def test_excluding_both_kinds_is_an_error(invoke, tree):
+    result = invoke("photos", "scan", str(tree), "--no-videos", "--no-images")
+    assert result.exit_code != 0
 
 
 def test_scan_honours_filters(invoke, tree):
     result = invoke("photos", "scan", str(tree), "--exclude", "*.mov")
     assert "b.mov" not in result.output
-    assert "1 file(s)" in result.output
+    assert "2 file(s)" in result.output
 
 
 def test_scan_honours_min_size(invoke, tree):
@@ -55,13 +76,13 @@ def test_scan_needs_no_network(invoke, tree):
     assert invoke("photos", "scan", str(tree)).exit_code == 0
 
 
-def test_upload_sends_every_video(invoke, tree, fake_icloud, data_dir):
+def test_upload_sends_video_and_images(invoke, tree, fake_icloud, data_dir):
     result = invoke("--apple-id", ACCOUNT, "photos", "upload", str(tree))
 
     assert result.exit_code == 0
-    assert uploads(fake_icloud) == ["a.mp4", "b.mov"]
+    assert uploads(fake_icloud) == ["a.mp4", "b.mov", "photo.jpg"]
     with Ledger(data_dir / "ledger.db") as ledger:
-        assert ledger.stats()["confirmed"] == 2
+        assert ledger.stats()["confirmed"] == 3
 
 
 def test_second_run_skips_everything(invoke, tree, fake_icloud):
@@ -103,17 +124,28 @@ def test_limit_caps_the_number_of_uploads(invoke, tree, fake_icloud):
     assert len(fake_icloud.photos_service.uploaded) == 1
 
 
-def test_concurrency_option_is_honoured(invoke, tree, fake_icloud):
-    result = invoke(
-        "--apple-id", ACCOUNT, "photos", "upload", str(tree), "--concurrency", "2"
-    )
-    assert result.exit_code == 0
+def test_upload_can_exclude_images(invoke, tree, fake_icloud):
+    invoke("--apple-id", ACCOUNT, "photos", "upload", str(tree), "--no-images")
     assert uploads(fake_icloud) == ["a.mp4", "b.mov"]
 
 
-def test_include_images_uploads_pictures(invoke, tree, fake_icloud):
-    invoke("--apple-id", ACCOUNT, "photos", "upload", str(tree), "--include-images")
-    assert "photo.jpg" in uploads(fake_icloud)
+def test_upload_can_exclude_videos(invoke, tree, fake_icloud):
+    invoke("--apple-id", ACCOUNT, "photos", "upload", str(tree), "--no-videos")
+    assert uploads(fake_icloud) == ["photo.jpg"]
+
+
+def test_upload_excluding_both_kinds_is_an_error(invoke, tree, fake_icloud):
+    result = invoke(
+        "--apple-id",
+        ACCOUNT,
+        "photos",
+        "upload",
+        str(tree),
+        "--no-videos",
+        "--no-images",
+    )
+    assert result.exit_code != 0
+    assert fake_icloud.photos_service.uploaded == []
 
 
 def test_filters_apply_to_upload(invoke, tree, fake_icloud):
@@ -129,12 +161,12 @@ def test_filters_apply_to_upload(invoke, tree, fake_icloud):
         "10",
         "--follow-symlinks",
     )
-    assert uploads(fake_icloud) == ["a.mp4"]
+    assert uploads(fake_icloud) == ["a.mp4", "photo.jpg"]
 
 
 def test_failures_exit_nonzero_and_are_listed(invoke, tree, fake_icloud):
     fake_icloud.photos_service.upload_results = [
-        PyiCloudAPIResponseException("500 boom") for _ in range(6)
+        PyiCloudAPIResponseException("500 boom") for _ in range(9)
     ]
     result = invoke("--apple-id", ACCOUNT, "photos", "upload", str(tree))
 
@@ -143,12 +175,12 @@ def test_failures_exit_nonzero_and_are_listed(invoke, tree, fake_icloud):
 
 
 def test_unverified_uploads_are_reported(invoke, tree, fake_icloud, data_dir):
-    fake_icloud.photos_service.upload_results = [None, None]
+    fake_icloud.photos_service.upload_results = [None, None, None]
     result = invoke("--apple-id", ACCOUNT, "photos", "upload", str(tree))
 
     assert result.exit_code == 0
     with Ledger(data_dir / "ledger.db") as ledger:
-        assert ledger.stats()["unverified"] == 2
+        assert ledger.stats()["unverified"] == 3
 
 
 def test_upload_requires_an_apple_id(invoke, tree, fake_icloud):

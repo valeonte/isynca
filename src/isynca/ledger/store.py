@@ -16,7 +16,6 @@ retry.
 from __future__ import annotations
 
 import sqlite3
-import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -100,16 +99,10 @@ class Ledger:
         try:
             if str(path) != ":memory:":
                 path.parent.mkdir(parents=True, exist_ok=True)
-            # check_same_thread is off because the runner may upload from a
-            # small thread pool; every statement below runs under _lock, so
-            # the connection is still only touched by one thread at a time.
-            self._conn = sqlite3.connect(
-                path, isolation_level=None, check_same_thread=False
-            )
+            self._conn = sqlite3.connect(path, isolation_level=None)
         except (OSError, sqlite3.Error) as exc:
             raise LedgerError(f"Could not open ledger at {path}: {exc}") from exc
 
-        self._lock = threading.Lock()
         self._conn.row_factory = sqlite3.Row
         self._migrate()
 
@@ -141,12 +134,11 @@ class Ledger:
 
     @contextmanager
     def _guard(self, action: str) -> Iterator[sqlite3.Connection]:
-        """Serialise access and translate sqlite failures into ledger errors."""
-        with self._lock:
-            try:
-                yield self._conn
-            except sqlite3.Error as exc:
-                raise LedgerError(f"Ledger {action} failed: {exc}") from exc
+        """Translate sqlite failures into :class:`LedgerError`."""
+        try:
+            yield self._conn
+        except sqlite3.Error as exc:
+            raise LedgerError(f"Ledger {action} failed: {exc}") from exc
 
     def cached_hash(self, path: Path, size: int, mtime_ns: int) -> str | None:
         """Return the stored hash for ``path`` if its stat data is unchanged."""

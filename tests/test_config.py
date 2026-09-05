@@ -40,10 +40,10 @@ def test_derived_paths(tmp_path):
 
 
 def test_with_overrides_ignores_none():
-    config = Config(apple_id="a@example.com", concurrency=3)
-    updated = config.with_overrides(apple_id=None, concurrency=5)
+    config = Config(apple_id="a@example.com", min_size=3)
+    updated = config.with_overrides(apple_id=None, min_size=5)
     assert updated.apple_id == "a@example.com"
-    assert updated.concurrency == 5
+    assert updated.min_size == 5
 
 
 def test_with_overrides_rejects_unknown():
@@ -57,8 +57,8 @@ def test_load_file_missing_returns_empty(tmp_path):
 
 def test_load_file_reads_isynca_table(tmp_path):
     path = tmp_path / "config.toml"
-    path.write_text('[isynca]\napple_id = "me@example.com"\nconcurrency = 4\n')
-    assert load_file(path) == {"apple_id": "me@example.com", "concurrency": 4}
+    path.write_text('[isynca]\napple_id = "me@example.com"\nmin_size = 4\n')
+    assert load_file(path) == {"apple_id": "me@example.com", "min_size": 4}
 
 
 def test_load_file_accepts_bare_table(tmp_path):
@@ -81,10 +81,28 @@ def test_load_file_rejects_non_table(tmp_path):
         load_file(path)
 
 
+def test_media_kinds_default_to_both_on():
+    config = Config()
+    assert config.videos
+    assert config.images
+
+
+def test_media_kinds_can_be_switched_off():
+    assert Config().with_overrides(images=False).videos
+    assert not Config().with_overrides(images=False).images
+
+
+def test_load_env_reads_boolean_kind_toggles():
+    assert load_env({"ISYNCA_VIDEOS": "no", "ISYNCA_IMAGES": "true"}) == {
+        "videos": False,
+        "images": True,
+    }
+
+
 def test_load_env_coerces_types():
     env = {
         "ISYNCA_APPLE_ID": "me@example.com",
-        "ISYNCA_CONCURRENCY": "3",
+        "ISYNCA_MIN_SIZE": "3",
         "ISYNCA_FOLLOW_SYMLINKS": "yes",
         "ISYNCA_VERBOSE": "0",
         "PATH": "/usr/bin",
@@ -92,7 +110,7 @@ def test_load_env_coerces_types():
     }
     assert load_env(env) == {
         "apple_id": "me@example.com",
-        "concurrency": 3,
+        "min_size": 3,
         "follow_symlinks": True,
         "verbose": False,
     }
@@ -105,19 +123,19 @@ def test_load_env_reads_os_environ_by_default(monkeypatch):
 
 def test_load_env_rejects_bad_integer():
     with pytest.raises(ConfigError, match="must be an integer"):
-        load_env({"ISYNCA_CONCURRENCY": "many"})
+        load_env({"ISYNCA_MIN_SIZE": "many"})
 
 
 def test_load_layers_precedence(tmp_path):
     path = tmp_path / "config.toml"
-    path.write_text('[isynca]\napple_id = "file@example.com"\nconcurrency = 1\n')
+    path.write_text('[isynca]\napple_id = "file@example.com"\nmin_size = 1\n')
     config = load(
         config_path=path,
-        environ={"ISYNCA_CONCURRENCY": "2"},
+        environ={"ISYNCA_MIN_SIZE": "2"},
         apple_id="cli@example.com",
     )
     assert config.apple_id == "cli@example.com"  # CLI beats file
-    assert config.concurrency == 2  # env beats file
+    assert config.min_size == 2  # env beats file
 
 
 def test_load_converts_paths_and_sequences(tmp_path):

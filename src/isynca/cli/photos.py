@@ -18,10 +18,11 @@ from rich.table import Table
 
 from isynca.cli.context import get_context
 from isynca.config import Config
+from isynca.errors import ConfigError
 from isynca.icloud import session as icloud_session
 from isynca.icloud.photos import PhotosUploader
 from isynca.ledger.store import Ledger, UploadStatus
-from isynca.media.scanner import DEFAULT_KINDS, Scanner
+from isynca.media.scanner import Scanner
 from isynca.media.types import MediaKind
 from isynca.sync.planner import PlannedUpload, Planner, UploadPlan
 from isynca.sync.report import RunReport, format_bytes
@@ -34,15 +35,24 @@ SourceArg = Annotated[
     typer.Argument(help="Folders or files to scan.", show_default=False),
 ]
 
+# Both kinds are on by default; each flag pair lets one be switched off
+# without having to re-state the other.
+VideosOpt = Annotated[
+    bool | None,
+    typer.Option("--videos/--no-videos", help="Include video files."),
+]
+ImagesOpt = Annotated[
+    bool | None,
+    typer.Option("--images/--no-images", help="Include image files."),
+]
+
 
 @app.command("scan")
 def scan(
     ctx: typer.Context,
     sources: SourceArg,
-    include_images: Annotated[
-        bool,
-        typer.Option("--include-images", help="Also match image files."),
-    ] = False,
+    videos: VideosOpt = None,
+    images: ImagesOpt = None,
     min_size: Annotated[
         int | None,
         typer.Option("--min-size", help="Ignore files smaller than N bytes."),
@@ -58,11 +68,13 @@ def scan(
     """List the media that an upload would consider. Touches no network."""
     app_ctx = get_context(ctx)
     config = app_ctx.config.with_overrides(
+        videos=videos,
+        images=images,
         min_size=min_size,
         exclude=tuple(exclude) if exclude else None,
         follow_symlinks=follow_symlinks or None,
     )
-    scanner = _build_scanner(config, include_images)
+    scanner = _build_scanner(config)
 
     table = Table(title="Discovered media")
     table.add_column("File", overflow="fold")
@@ -95,13 +107,8 @@ def upload(
     limit: Annotated[
         int | None, typer.Option("--limit", help="Upload at most N files.")
     ] = None,
-    concurrency: Annotated[
-        int | None,
-        typer.Option("--concurrency", help="Parallel uploads (default 1)."),
-    ] = None,
-    include_images: Annotated[
-        bool, typer.Option("--include-images", help="Also upload image files.")
-    ] = False,
+    videos: VideosOpt = None,
+    images: ImagesOpt = None,
     min_size: Annotated[
         int | None,
         typer.Option("--min-size", help="Ignore files smaller than N bytes."),
@@ -118,13 +125,14 @@ def upload(
     config = app_ctx.config.with_overrides(
         album=album,
         dry_run=dry_run or None,
-        concurrency=concurrency,
+        videos=videos,
+        images=images,
         min_size=min_size,
         exclude=tuple(exclude) if exclude else None,
         follow_symlinks=follow_symlinks or None,
     )
     console = app_ctx.console
-    scanner = _build_scanner(config, include_images)
+    scanner = _build_scanner(config)
 
     with Ledger(config.ledger_path) as ledger:
         plan = _build_plan(scanner, ledger, sources, limit, console)
@@ -154,13 +162,23 @@ def upload(
         raise typer.Exit(code=1)
 
 
-def _build_scanner(config: Config, include_images: bool) -> Scanner:
-    """Build a scanner from resolved settings."""
-    kinds = (
-        frozenset({MediaKind.VIDEO, MediaKind.IMAGE})
-        if include_images
-        else DEFAULT_KINDS
+def _build_scanner(config: Config) -> Scanner:
+    """Build a scanner from resolved settings.
+
+    Turning both kinds off leaves nothing to look for; the scanner rejects
+    that rather than silently walking the tree and finding zero files.
+    """
+    kinds = frozenset(
+        kind
+        for kind, enabled in (
+            (MediaKind.VIDEO, config.videos),
+            (MediaKind.IMAGE, config.images),
+        )
+        if enabled
     )
+    if not kinds:
+        raise ConfigError("Nothing to scan for: --no-videos and --no-images cancel out")
+
     return Scanner(
         kinds=kinds,
         min_size=config.min_size,
@@ -224,7 +242,6 @@ def _execute(
             uploader=uploader,
             ledger=ledger,
             dry_run=config.dry_run,
-            concurrency=config.concurrency,
             progress=advance,
         )
         return runner.run(plan)

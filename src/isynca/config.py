@@ -46,7 +46,8 @@ class Config:
     apple_id: str | None = None
     data_dir: Path = field(default_factory=default_data_dir)
     album: str | None = None
-    concurrency: int = 1
+    videos: bool = True
+    images: bool = True
     min_size: int = 0
     follow_symlinks: bool = False
     exclude: tuple[str, ...] = ()
@@ -75,7 +76,8 @@ class Config:
 _FIELD_TYPES: dict[str, type] = {
     "apple_id": str,
     "album": str,
-    "concurrency": int,
+    "videos": bool,
+    "images": bool,
     "min_size": int,
     "follow_symlinks": bool,
     "verbose": bool,

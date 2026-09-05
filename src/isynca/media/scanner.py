@@ -14,7 +14,7 @@ from isynca.media.types import MediaFile, MediaKind, classify, extensions_for
 
 LOGGER = get_logger("scanner")
 
-DEFAULT_KINDS: frozenset[MediaKind] = frozenset({MediaKind.VIDEO})
+DEFAULT_KINDS: frozenset[MediaKind] = frozenset({MediaKind.VIDEO, MediaKind.IMAGE})
 
 
 @dataclass(slots=True)

@@ -1,8 +1,8 @@
 """Executing an upload plan.
 
-Uploads run sequentially by default. The pyicloud session wraps a shared
-``requests`` session with mutable auth state and carries no documented
-thread-safety guarantee, so parallelism is opt-in via ``concurrency``.
+Uploads run one at a time. The pyicloud session wraps a shared ``requests``
+session with mutable auth state and carries no documented thread-safety
+guarantee, so there is no parallel path to get wrong.
 
 Every result is written to the ledger the moment it is known, rather than
 batched at the end, so an interrupted run resumes without re-sending whatever
@@ -11,10 +11,8 @@ already crossed the wire.
 
 from __future__ import annotations
 
-import threading
 import time
-from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from isynca.errors import FatalError, ItemError
@@ -51,7 +49,6 @@ class UploadRunner:
         uploader: PhotosUploader | None,
         ledger: Ledger,
         dry_run: bool = False,
-        concurrency: int = 1,
         retry: RetryPolicy | None = None,
         progress: ProgressHook | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -59,13 +56,9 @@ class UploadRunner:
         self._uploader = uploader
         self._ledger = ledger
         self._dry_run = dry_run
-        self._concurrency = max(1, concurrency)
         self._retry = retry or RetryPolicy()
         self._progress = progress
         self._sleep = sleep
-        # Guards the report and the progress hook: both are plain mutable
-        # state shared across pool threads when concurrency > 1.
-        self._lock = threading.Lock()
 
     def run(self, plan: UploadPlan) -> RunReport:
         """Execute ``plan`` and return a report of what happened."""
@@ -73,18 +66,10 @@ class UploadRunner:
         for skipped in plan.skipped:
             report.record_skip(skipped.reason)
 
-        if self._concurrency == 1:
-            for item in plan.pending:
-                self._process(item, report)
-        else:
-            self._run_parallel(plan.pending, report)
+        for item in plan.pending:
+            self._process(item, report)
 
         return report
-
-    def _run_parallel(self, items: Iterable[PlannedUpload], report: RunReport) -> None:
-        """Upload ``items`` across a small thread pool."""
-        with ThreadPoolExecutor(max_workers=self._concurrency) as pool:
-            list(pool.map(lambda item: self._process(item, report), items))
 
     def _process(self, item: PlannedUpload, report: RunReport) -> None:
         """Upload one file, record the outcome, and update the report."""
@@ -97,8 +82,7 @@ class UploadRunner:
             outcome = self._upload_with_retries(item)
         except ItemError as exc:
             LOGGER.error("%s", exc)
-            with self._lock:
-                report.record_failure(item.path, str(exc))
+            report.record_failure(item.path, str(exc))
             self._notify(item, None)
             return
 
@@ -110,8 +94,7 @@ class UploadRunner:
             master_id=outcome.master_id,
             asset_id=outcome.asset_id,
         )
-        with self._lock:
-            report.record_status(outcome.status, item.size)
+        report.record_status(outcome.status, item.size)
         LOGGER.info("%s: %s", item.path.name, outcome.status)
         self._notify(item, outcome.status)
 
@@ -148,8 +131,7 @@ class UploadRunner:
     def _notify(self, item: PlannedUpload, status: UploadStatus | None) -> None:
         """Invoke the progress hook, if one was supplied."""
         if self._progress is not None:
-            with self._lock:
-                self._progress(item, status)
+            self._progress(item, status)
 
 
 __all__ = ["ProgressHook", "RetryPolicy", "UploadRunner"]

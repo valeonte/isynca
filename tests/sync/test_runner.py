@@ -167,21 +167,17 @@ def test_progress_hook_reports_failures_as_none(session, ledger, make_media):
     assert seen == [None]
 
 
-def test_concurrent_run_uploads_every_file(session, ledger, make_media):
+def test_files_upload_one_at_a_time_in_plan_order(session, ledger, make_media):
     media = [
         make_media(name=f"clip{i}.mp4", content=f"body-{i}".encode()) for i in range(8)
     ]
-    report = build(session, ledger, concurrency=4).run(plan_with(*media))
+    report = build(session, ledger).run(plan_with(*media))
 
     assert report.confirmed == 8
-    assert len(session.photos_service.uploaded) == 8
+    uploaded = [path for path, _ in session.photos_service.uploaded]
+    assert uploaded == [str(item.path) for item in media]
     for item in media:
         assert ledger.lookup(hash_file(item.path)) is not None
-
-
-def test_concurrency_below_one_is_clamped(session, ledger, make_media):
-    report = build(session, ledger, concurrency=0).run(plan_with(make_media()))
-    assert report.confirmed == 1
 
 
 def test_empty_plan_produces_an_empty_report(session, ledger):

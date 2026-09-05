@@ -12,52 +12,55 @@ def names(media_files):
     return sorted(m.path.name for m in media_files)
 
 
-def test_finds_video_recursively(tree):
+def test_finds_video_and_images_recursively(tree):
     scanner = Scanner()
+    assert names(scanner.scan([tree])) == ["a.mp4", "b.mov", "photo.jpg"]
+
+
+def test_ignores_audio_by_default(tree):
+    """Audio is never a candidate: iCloud Photos cannot ingest it."""
+    assert "song.mp3" not in names(Scanner().scan([tree]))
+
+
+def test_video_only(tree):
+    scanner = Scanner(kinds=frozenset({MediaKind.VIDEO}))
     assert names(scanner.scan([tree])) == ["a.mp4", "b.mov"]
 
 
-def test_ignores_audio_and_images_by_default(tree):
-    scanner = Scanner()
-    found = names(scanner.scan([tree]))
-    assert "song.mp3" not in found
-    assert "photo.jpg" not in found
-
-
-def test_include_images(tree):
-    scanner = Scanner(kinds=frozenset({MediaKind.VIDEO, MediaKind.IMAGE}))
-    assert names(scanner.scan([tree])) == ["a.mp4", "b.mov", "photo.jpg"]
+def test_images_only(tree):
+    scanner = Scanner(kinds=frozenset({MediaKind.IMAGE}))
+    assert names(scanner.scan([tree])) == ["photo.jpg"]
 
 
 def test_stats_are_recorded(tree):
     scanner = Scanner()
     list(scanner.scan([tree]))
-    assert scanner.stats.matched == 2
+    assert scanner.stats.matched == 3
     assert scanner.stats.files_seen == 5
-    assert scanner.stats.skipped_extension == 3
-    assert scanner.stats.skipped == 3
+    assert scanner.stats.skipped_extension == 2
+    assert scanner.stats.skipped == 2
 
 
 def test_min_size_filter(tree):
     scanner = Scanner(min_size=150)
     assert names(scanner.scan([tree])) == ["b.mov"]
-    assert scanner.stats.skipped_too_small == 1
+    assert scanner.stats.skipped_too_small == 2
 
 
 def test_exclude_by_basename_glob(tree):
     scanner = Scanner(exclude=["*.mov"])
-    assert names(scanner.scan([tree])) == ["a.mp4"]
+    assert names(scanner.scan([tree])) == ["a.mp4", "photo.jpg"]
     assert scanner.stats.skipped_excluded == 1
 
 
 def test_exclude_by_path_glob(tree):
     scanner = Scanner(exclude=["*/day1/*"])
-    assert names(scanner.scan([tree])) == ["a.mp4"]
+    assert names(scanner.scan([tree])) == ["a.mp4", "photo.jpg"]
 
 
 def test_exclude_prunes_directories(tree):
     scanner = Scanner(exclude=["day1"])
-    assert names(scanner.scan([tree])) == ["a.mp4"]
+    assert names(scanner.scan([tree])) == ["a.mp4", "photo.jpg"]
     # The pruned directory's contents were never even stat'd.
     assert scanner.stats.files_seen == 4
 
@@ -86,7 +89,7 @@ def test_no_kinds_raises():
 def test_overlapping_sources_yield_each_file_once(tree):
     scanner = Scanner()
     found = names(scanner.scan([tree, tree / "trip"]))
-    assert found == ["a.mp4", "b.mov"]
+    assert found == ["a.mp4", "b.mov", "photo.jpg"]
 
 
 def test_unreadable_file_is_recorded(tree, monkeypatch):
@@ -99,7 +102,7 @@ def test_unreadable_file_is_recorded(tree, monkeypatch):
 
     monkeypatch.setattr(Path, "stat", flaky_stat)
     scanner = Scanner()
-    assert names(scanner.scan([tree])) == ["b.mov"]
+    assert names(scanner.scan([tree])) == ["b.mov", "photo.jpg"]
     assert [p.name for p in scanner.stats.unreadable] == ["a.mp4"]
 
 
@@ -126,4 +129,4 @@ def test_symlinked_directory_followed_when_requested(tmp_path, tree):
     link_root.mkdir()
     (link_root / "trip").symlink_to(tree / "trip", target_is_directory=True)
     scanner = Scanner(follow_symlinks=True)
-    assert names(scanner.scan([link_root])) == ["a.mp4", "b.mov"]
+    assert names(scanner.scan([link_root])) == ["a.mp4", "b.mov", "photo.jpg"]
