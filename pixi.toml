@@ -4,6 +4,26 @@ name = "isynca"
 platforms = ["linux-64"]
 version = "0.1.0"
 
-[tasks]
-
 [dependencies]
+python = "3.14.*"
+
+[pypi-dependencies]
+isynca = { path = ".", editable = true }
+
+[feature.dev.pypi-dependencies]
+pytest = ">=8.3"
+pytest-cov = ">=6.0"
+pytest-socket = ">=0.7"
+ruff = "==0.16.6"
+ty = "==0.0.78"
+
+[environments]
+default = { features = ["dev"], solve-group = "default" }
+
+[tasks]
+lint = "ruff check src tests"
+fmt = "ruff format src tests"
+fmt-check = "ruff format --check src tests"
+typecheck = "ty check src tests"
+test = "pytest"
+check = { depends-on = ["fmt-check", "lint", "typecheck", "test"] }
