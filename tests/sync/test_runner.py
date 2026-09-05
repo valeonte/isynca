@@ -5,6 +5,7 @@ from isynca.errors import AlbumNotFoundError
 from isynca.icloud.photos import PhotosUploader
 from isynca.ledger.hashing import hash_file
 from isynca.ledger.store import UploadStatus
+from isynca.sync.archiver import Archiver
 from isynca.sync.planner import PlannedUpload, SkippedUpload, SkipReason, UploadPlan
 from isynca.sync.runner import RetryPolicy, UploadRunner
 
@@ -184,3 +185,175 @@ def test_empty_plan_produces_an_empty_report(session, ledger):
     report = build(session, ledger).run(UploadPlan())
     assert report.uploaded == 0
     assert report.ok
+
+
+# --- archiving ---------------------------------------------------------------
+
+
+def archiving_runner(session, ledger, target, **kwargs):
+    kwargs.setdefault("sleep", lambda _: None)
+    return UploadRunner(
+        uploader=PhotosUploader(session),
+        ledger=ledger,
+        archiver=Archiver(target, kwargs.pop("dry_run", False)),
+        **kwargs,
+    )
+
+
+def test_confirmed_upload_is_moved_to_the_target(session, ledger, tmp_path, make_media):
+    target = tmp_path / "archive"
+    media = make_media(name="trip/clip.mp4")
+    report = archiving_runner(session, ledger, target).run(plan_with(media))
+
+    assert report.moved == 1
+    assert (target / "trip" / "clip.mp4").is_file()
+    assert not media.path.exists()
+
+
+def test_duplicate_is_moved_too(session, ledger, tmp_path, make_media):
+    """ICloud already holding the content is just as good as uploading it."""
+    session.photos_service.upload_results = [
+        PyiCloudAPIResponseException("duplicate asset")
+    ]
+    target = tmp_path / "archive"
+    media = make_media(name="clip.mp4")
+    report = archiving_runner(session, ledger, target).run(plan_with(media))
+
+    assert report.moved == 1
+    assert (target / "clip.mp4").is_file()
+
+
+def test_unverified_upload_is_held_in_place(session, ledger, tmp_path, make_media):
+    session.photos_service.upload_results = [None]
+    target = tmp_path / "archive"
+    media = make_media(name="clip.mp4")
+    report = archiving_runner(session, ledger, target).run(plan_with(media))
+
+    assert report.held_in_place == 1
+    assert report.moved == 0
+    assert media.path.exists(), "an unconfirmed upload must keep its local copy"
+
+
+def test_already_uploaded_files_are_moved(session, ledger, tmp_path, make_media):
+    """Otherwise an archive run would never drain its source folder."""
+    target = tmp_path / "archive"
+    media = make_media(name="clip.mp4")
+    digest = hash_file(media.path)
+    ledger.record_upload(
+        content_hash=digest,
+        size=media.size,
+        path=media.path,
+        status=UploadStatus.CONFIRMED,
+    )
+    plan = plan_with(skipped=[(media, SkipReason.ALREADY_UPLOADED)])
+    plan.skipped[0] = SkippedUpload(
+        media=media,
+        reason=SkipReason.ALREADY_UPLOADED,
+        record=ledger.lookup(digest),
+    )
+
+    report = archiving_runner(session, ledger, target).run(plan)
+
+    assert report.moved == 1
+    assert (target / "clip.mp4").is_file()
+    assert session.photos_service.uploaded == [], "nothing needed re-uploading"
+
+
+def test_already_uploaded_but_unverified_is_held(session, ledger, tmp_path, make_media):
+    target = tmp_path / "archive"
+    media = make_media(name="clip.mp4")
+    digest = hash_file(media.path)
+    ledger.record_upload(
+        content_hash=digest,
+        size=media.size,
+        path=media.path,
+        status=UploadStatus.UNVERIFIED,
+    )
+    plan = UploadPlan()
+    plan.skipped.append(
+        SkippedUpload(
+            media=media,
+            reason=SkipReason.ALREADY_UPLOADED,
+            record=ledger.lookup(digest),
+        )
+    )
+
+    report = archiving_runner(session, ledger, target).run(plan)
+
+    assert report.held_in_place == 1
+    assert media.path.exists()
+
+
+def test_unreadable_skips_are_not_archived(session, ledger, tmp_path, make_media):
+    target = tmp_path / "archive"
+    media = make_media(name="clip.mp4")
+    plan = plan_with(skipped=[(media, SkipReason.UNREADABLE)])
+
+    report = archiving_runner(session, ledger, target).run(plan)
+
+    assert report.moved == 0
+    assert report.held_in_place == 0
+
+
+def test_skipped_record_without_a_row_is_held(session, ledger, tmp_path, make_media):
+    target = tmp_path / "archive"
+    media = make_media(name="clip.mp4")
+    plan = plan_with(skipped=[(media, SkipReason.ALREADY_UPLOADED)])
+
+    report = archiving_runner(session, ledger, target).run(plan)
+
+    assert report.held_in_place == 1
+
+
+def test_collision_leaves_the_source_alone(session, ledger, tmp_path, make_media):
+    target = tmp_path / "archive"
+    target.mkdir()
+    (target / "clip.mp4").write_bytes(b"already filed")
+    media = make_media(name="clip.mp4")
+
+    report = archiving_runner(session, ledger, target).run(plan_with(media))
+
+    assert report.move_collisions == 1
+    assert report.moved == 0
+    assert media.path.exists()
+    assert (target / "clip.mp4").read_bytes() == b"already filed"
+
+
+def test_move_failure_is_recorded_and_fails_the_run(
+    session, ledger, tmp_path, make_media, monkeypatch
+):
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("isynca.sync.archiver.shutil.move", boom)
+    target = tmp_path / "archive"
+    media = make_media(name="clip.mp4")
+
+    report = archiving_runner(session, ledger, target).run(plan_with(media))
+
+    assert report.move_failures
+    assert not report.ok
+    assert report.confirmed == 1, "the upload itself still succeeded"
+
+
+def test_dry_run_previews_the_move_without_touching_disk(
+    session, ledger, tmp_path, make_media
+):
+    target = tmp_path / "archive"
+    media = make_media(name="clip.mp4")
+    runner = archiving_runner(session, ledger, target, dry_run=True)
+
+    report = runner.run(plan_with(media))
+
+    assert report.moved == 1
+    assert media.path.exists()
+    assert not target.exists()
+
+
+def test_report_marks_itself_as_archiving(session, ledger, tmp_path, make_media):
+    report = archiving_runner(session, ledger, tmp_path / "a").run(UploadPlan())
+    assert report.archiving
+
+
+def test_report_is_not_archiving_without_an_archiver(session, ledger, make_media):
+    assert not build(session, ledger).run(UploadPlan()).archiving

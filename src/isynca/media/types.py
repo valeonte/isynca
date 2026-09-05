@@ -81,8 +81,20 @@ class MediaFile:
     kind: MediaKind
     size: int
     mtime_ns: int
+    source_root: Path
+    """The scanned root this file was found under.
+
+    Only the scanner knows which source a file came from, and it cannot be
+    recovered afterwards when several overlapping sources were given. It is
+    what lets an archive run reproduce the folder structure under a new root.
+    """
 
     @property
     def name(self) -> str:
         """Return the file's base name."""
         return self.path.name
+
+    @property
+    def relative_path(self) -> Path:
+        """Return this file's path relative to the root it was found under."""
+        return self.path.relative_to(self.source_root)

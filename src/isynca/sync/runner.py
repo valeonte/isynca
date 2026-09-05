@@ -19,7 +19,14 @@ from isynca.errors import FatalError, ItemError
 from isynca.icloud.photos import PhotosUploader, UploadOutcome
 from isynca.ledger.store import Ledger, UploadStatus
 from isynca.logging import get_logger
-from isynca.sync.planner import PlannedUpload, UploadPlan
+from isynca.media.types import MediaFile
+from isynca.sync.archiver import ArchiveOutcome, Archiver, is_archivable
+from isynca.sync.planner import (
+    PlannedUpload,
+    SkippedUpload,
+    SkipReason,
+    UploadPlan,
+)
 from isynca.sync.report import RunReport
 
 LOGGER = get_logger("runner")
@@ -49,6 +56,7 @@ class UploadRunner:
         uploader: PhotosUploader | None,
         ledger: Ledger,
         dry_run: bool = False,
+        archiver: Archiver | None = None,
         retry: RetryPolicy | None = None,
         progress: ProgressHook | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -56,25 +64,61 @@ class UploadRunner:
         self._uploader = uploader
         self._ledger = ledger
         self._dry_run = dry_run
+        self._archiver = archiver
         self._retry = retry or RetryPolicy()
         self._progress = progress
         self._sleep = sleep
 
     def run(self, plan: UploadPlan) -> RunReport:
         """Execute ``plan`` and return a report of what happened."""
-        report = RunReport(dry_run=self._dry_run)
+        report = RunReport(dry_run=self._dry_run, archiving=self._archiver is not None)
         for skipped in plan.skipped:
             report.record_skip(skipped.reason)
+            self._archive_skipped(skipped, report)
 
         for item in plan.pending:
             self._process(item, report)
 
         return report
 
+    def _archive_skipped(self, skipped: SkippedUpload, report: RunReport) -> None:
+        """Archive a file the ledger already knows iCloud holds.
+
+        Without this an archive run would never drain its source folder:
+        everything uploaded on an earlier run would be skipped here and left
+        sitting where it was found.
+        """
+        if self._archiver is None or skipped.reason is not SkipReason.ALREADY_UPLOADED:
+            return
+        status = skipped.record.status if skipped.record else None
+        self._archive(skipped.media, status, report)
+
+    def _archive(
+        self, media: MediaFile, status: UploadStatus | None, report: RunReport
+    ) -> None:
+        """Move ``media`` into the archive target if iCloud has confirmed it."""
+        if self._archiver is None:
+            return
+        if status is None or not is_archivable(status):
+            LOGGER.debug("Holding %s: iCloud has not confirmed it", media.path)
+            report.record_held()
+            return
+
+        try:
+            outcome = self._archiver.archive(media)
+        except ItemError as exc:
+            LOGGER.error("%s", exc)
+            report.record_move_failure(media.path, str(exc))
+            return
+        report.record_move(outcome is ArchiveOutcome.MOVED)
+
     def _process(self, item: PlannedUpload, report: RunReport) -> None:
         """Upload one file, record the outcome, and update the report."""
         if self._dry_run:
             LOGGER.info("Would upload %s", item.path)
+            # A preview assumes the upload would succeed, so the archive step
+            # it reports is the one a real run would take.
+            self._archive(item.media, UploadStatus.CONFIRMED, report)
             self._notify(item, None)
             return
 
@@ -96,6 +140,7 @@ class UploadRunner:
         )
         report.record_status(outcome.status, item.size)
         LOGGER.info("%s: %s", item.path.name, outcome.status)
+        self._archive(item.media, outcome.status, report)
         self._notify(item, outcome.status)
 
     def _upload_with_retries(self, item: PlannedUpload) -> UploadOutcome:

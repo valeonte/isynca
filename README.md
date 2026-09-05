@@ -1,5 +1,7 @@
 # isynca
 
+[![CI](https://github.com/valeonte/isynca/actions/workflows/ci.yml/badge.svg)](https://github.com/valeonte/isynca/actions/workflows/ci.yml)
+
 A modular toolkit for iCloud operations, built on [pyicloud](https://github.com/timlaing/pyicloud).
 
 The first capability is bulk upload of photos and video from a local folder tree
@@ -23,6 +25,7 @@ pixi run isynca photos upload ~/Media
 | `isynca auth logout` | Drop the stored session and keyring password |
 | `isynca photos scan SRC...` | Inventory matching media without touching the network |
 | `isynca photos upload SRC...` | Upload discovered media to iCloud Photos |
+| `isynca photos archive SRC... --to DEST` | Upload, then move what iCloud holds into DEST |
 | `isynca ledger stats` | Summarise what the ledger has recorded |
 | `isynca ledger list` | List recorded uploads |
 | `isynca ledger forget PATH` | Drop one file's record so it uploads again |
@@ -42,6 +45,69 @@ Switching off both is rejected rather than silently matching nothing.
 Audio is never uploaded. iCloud Photos ingests images and video and has no
 concept of a standalone audio asset, so audio files are not uploadable and
 `isynca` does not scan for them.
+
+## Requiring a capture date
+
+`--require-date-taken` holds back any file with no "date taken", reports it by
+name, and uploads the rest. It works on `upload` and `archive`, and on `scan`
+for a network-free audit:
+
+```bash
+isynca photos scan ~/Inbox --require-date-taken     # which files lack a date?
+isynca photos upload ~/Inbox --require-date-taken   # upload only dated files
+```
+
+Photos and video store this in completely different places, so there are two
+readers:
+
+- **Images** use EXIF `DateTimeOriginal`, falling back to `DateTimeDigitized`
+  then `DateTime`. Editors and export pipelines often drop the original tag
+  while keeping one of the others, and reporting an obviously-dated photo as
+  undated would be worse than accepting the fallback. HEIC is read via
+  `pillow-heif` — without it every iPhone photo would look undated.
+- **Video** has no EXIF. MP4/MOV keep the date in container atoms:
+  `com.apple.quicktime.creationdate` where Apple wrote one, otherwise the
+  `mvhd` creation time. The Apple value is preferred because `mvhd` is written
+  by the muxer, so a re-encode overwrites it. An `mvhd` of zero — which plenty
+  of muxers emit — counts as no date, not as a video shot in 1904.
+
+A held-back file is never uploaded and, in archive mode, never moved. Files
+already in iCloud skip the check entirely: blocking them would achieve nothing
+and would strand them in the source folder forever.
+
+## Archive mode
+
+`photos archive` is `photos upload` plus filing: once iCloud holds a file, its
+local copy is moved under a target folder, keeping the path it had relative to
+the source it was found under.
+
+```bash
+isynca photos archive ~/Inbox --to ~/Archive --dry-run
+isynca photos archive ~/Inbox --to ~/Archive
+```
+
+```
+~/Inbox/trip/day1/clip.mov   ->   ~/Archive/trip/day1/clip.mov
+```
+
+Three rules make this safe to point at real files:
+
+- **A file moves only when iCloud is known to hold it** — a created asset or a
+  reported duplicate. An upload that was accepted but not yet indexed
+  (`unverified`) keeps its local copy and is counted as *held*; a later run
+  re-checks it.
+- **Files already in iCloud are moved too**, not just ones uploaded on this
+  run. Without that the source folder would never drain — everything sent by an
+  earlier run would be skipped and left sitting there.
+- **An existing file at the destination is never overwritten.** The source is
+  left alone and the collision is reported, for you to resolve.
+
+A target inside a source (or a source inside the target) is rejected up front:
+the first would be re-scanned on the next run, the second would move files onto
+themselves.
+
+`--dry-run` previews the whole thing, including real collision checks, without
+uploading or moving anything.
 
 ## How re-runs stay cheap
 
@@ -91,6 +157,12 @@ pixi run lint       # ruff check
 pixi run typecheck  # ty
 pixi run fmt        # ruff format
 ```
+
+CI runs the same four checks on every push and pull request
+(`.github/workflows/ci.yml`). Each runs even if an earlier one fails, so a
+single run reports every problem. `pixi.lock` is installed with `--locked`, so
+a `pixi.toml` edit without a re-lock fails CI rather than quietly resolving to
+untested versions.
 
 Tests run with `pytest-socket` blocking network access at the socket layer.
 Everything above `icloud/protocols.py` is tested against an in-memory fake, so

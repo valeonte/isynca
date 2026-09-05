@@ -46,6 +46,22 @@ def test_extensions_for_multiple_kinds():
 
 def test_media_file_name(tmp_path):
     media = MediaFile(
-        path=tmp_path / "sub" / "clip.mp4", kind=MediaKind.VIDEO, size=1, mtime_ns=2
+        path=tmp_path / "sub" / "clip.mp4",
+        kind=MediaKind.VIDEO,
+        size=1,
+        mtime_ns=2,
+        source_root=tmp_path,
     )
     assert media.name == "clip.mp4"
+    assert media.relative_path == Path("sub/clip.mp4")
+
+
+def test_relative_path_of_a_file_at_the_root(tmp_path):
+    media = MediaFile(
+        path=tmp_path / "clip.mp4",
+        kind=MediaKind.VIDEO,
+        size=1,
+        mtime_ns=2,
+        source_root=tmp_path,
+    )
+    assert media.relative_path == Path("clip.mp4")

@@ -70,7 +70,7 @@ class Scanner:
             for pattern in self.exclude
         )
 
-    def _consider(self, path: Path) -> MediaFile | None:
+    def _consider(self, path: Path, source_root: Path) -> MediaFile | None:
         """Classify and stat one candidate file."""
         self.stats.files_seen += 1
 
@@ -96,7 +96,11 @@ class Scanner:
 
         self.stats.matched += 1
         return MediaFile(
-            path=path, kind=kind, size=stat.st_size, mtime_ns=stat.st_mtime_ns
+            path=path,
+            kind=kind,
+            size=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            source_root=source_root,
         )
 
     def scan(self, sources: Iterable[Path]) -> Iterator[MediaFile]:
@@ -116,7 +120,9 @@ class Scanner:
             raise ConfigError(f"Source path does not exist: {source}")
 
         if source.is_file():
-            candidate = self._track(source, seen)
+            # A single-file source has no structure to preserve, so its root
+            # is the containing directory and its relative path is the name.
+            candidate = self._track(source, source.parent, seen)
             if candidate is not None:
                 yield candidate
             return
@@ -129,11 +135,13 @@ class Scanner:
                 name for name in dirnames if not self._is_excluded(root_path / name)
             )
             for filename in sorted(filenames):
-                candidate = self._track(root_path / filename, seen)
+                candidate = self._track(root_path / filename, source, seen)
                 if candidate is not None:
                     yield candidate
 
-    def _track(self, path: Path, seen: set[Path]) -> MediaFile | None:
+    def _track(
+        self, path: Path, source_root: Path, seen: set[Path]
+    ) -> MediaFile | None:
         """Consider ``path`` unless an equivalent path was already yielded."""
         try:
             key = path.resolve()
@@ -142,7 +150,7 @@ class Scanner:
         if key in seen:
             return None
         seen.add(key)
-        return self._consider(path)
+        return self._consider(path, source_root)
 
     def _on_walk_error(self, exc: OSError) -> None:
         """Record a directory that could not be listed and keep walking."""

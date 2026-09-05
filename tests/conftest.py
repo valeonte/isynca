@@ -48,13 +48,18 @@ def make_media(tmp_path: Path):
         name: str = "clip.mp4",
         content: bytes = b"video-bytes",
         kind: MediaKind = MediaKind.VIDEO,
+        source_root: Path | None = None,
     ) -> MediaFile:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         stat = path.stat()
         return MediaFile(
-            path=path, kind=kind, size=stat.st_size, mtime_ns=stat.st_mtime_ns
+            path=path,
+            kind=kind,
+            size=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            source_root=source_root or tmp_path,
         )
 
     return factory
@@ -72,3 +77,8 @@ def tree(tmp_path: Path) -> Path:
     (root / "trip" / "photo.jpg").write_bytes(b"d" * 60)
     (root / "docs" / "notes.txt").write_text("hello")
     return root
+
+
+# Metadata-carrying media builders live in tests/media/conftest.py; re-exported
+# here so suites outside tests/media can use them too.
+from tests.media.conftest import make_image, make_video  # noqa: E402, F401

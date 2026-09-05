@@ -48,6 +48,7 @@ class Config:
     album: str | None = None
     videos: bool = True
     images: bool = True
+    require_date_taken: bool = False
     min_size: int = 0
     follow_symlinks: bool = False
     exclude: tuple[str, ...] = ()
@@ -78,6 +79,7 @@ _FIELD_TYPES: dict[str, type] = {
     "album": str,
     "videos": bool,
     "images": bool,
+    "require_date_taken": bool,
     "min_size": int,
     "follow_symlinks": bool,
     "verbose": bool,

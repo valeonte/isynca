@@ -6,9 +6,12 @@ version = "0.1.0"
 
 [dependencies]
 python = "3.14.*"
+pillow = ">=12.3.0"
 
 [pypi-dependencies]
 isynca = { path = ".", editable = true }
+# pillow-heif has no py3.14 conda-forge build yet; PyPI ships wheels for it.
+pillow-heif = ">=1.6.0"
 
 [feature.dev.pypi-dependencies]
 pytest = ">=8.3"

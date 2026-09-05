@@ -46,3 +46,7 @@ class UploadError(ItemError):
 
 class AlbumNotFoundError(FatalError):
     """The requested album does not exist and could not be created."""
+
+
+class ArchiveError(ItemError):
+    """One file could not be moved into the archive target."""
