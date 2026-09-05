@@ -31,6 +31,23 @@ pixi run isynca photos upload ~/Media
 | `isynca ledger forget PATH` | Drop one file's record so it uploads again |
 | `isynca ledger prune` | Remove cache rows for files that no longer exist |
 
+## Signing in once
+
+`auth login` records the account it signed in as, so later commands do not need
+`--apple-id` repeated:
+
+```bash
+isynca auth login --apple-id you@example.com   # once
+isynca auth status                             # no --apple-id needed
+isynca photos upload ~/Media                   # nor here
+```
+
+The account is stored beside the session cookies in `~/.local/share/isynca/`,
+not written into your `config.toml` — rewriting that file would discard your
+comments and layout. It is the lowest-precedence source, so `--apple-id`,
+`ISYNCA_APPLE_ID`, and an `apple_id` in `config.toml` all still override it.
+`auth logout` forgets it again.
+
 ## What gets uploaded
 
 Images and video are both included by default. Either kind can be switched off:

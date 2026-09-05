@@ -16,6 +16,7 @@ from isynca.cli import photos as photos_cli
 from isynca.cli.context import AppContext
 from isynca.config import load
 from isynca.errors import IsyncaError
+from isynca.icloud import session as icloud_session
 from isynca.logging import configure
 
 app = typer.Typer(
@@ -72,6 +73,13 @@ def main_callback(
         data_dir=data_dir,
         verbose=verbose or None,
     )
+    if settings.apple_id is None:
+        # Lowest precedence: an explicit --apple-id, ISYNCA_APPLE_ID, or a
+        # config.toml entry all still win. This only saves you from repeating
+        # the account on every command after signing in once.
+        settings = settings.with_overrides(
+            apple_id=icloud_session.recall_account(settings.data_dir)
+        )
     configure(verbose=settings.verbose)
     ctx.obj = AppContext(config=settings, console=Console())
 

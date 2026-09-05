@@ -131,3 +131,106 @@ def test_auth_group_help(runner):
     assert result.exit_code == 0
     for name in ("login", "status", "logout"):
         assert name in result.output
+
+
+# --- the account is remembered across commands -------------------------------
+
+
+def login_ok(invoke, monkeypatch, *extra):
+    monkeypatch.setattr("isynca.cli.auth.typer.prompt", lambda *a, **k: "hunter2")
+    return invoke("auth", "login", "--apple-id", ACCOUNT, *extra)
+
+
+def test_status_works_after_login_without_repeating_the_apple_id(
+    invoke, fake_connect, monkeypatch, data_dir
+):
+    """The reported bug: login succeeded, then status said no Apple ID."""
+    assert login_ok(invoke, monkeypatch).exit_code == 0
+
+    status = session_mod.SessionStatus(
+        apple_id=ACCOUNT,
+        authenticated=True,
+        trusted=True,
+        requires_2fa=False,
+        password_stored=False,
+    )
+    monkeypatch.setattr("isynca.cli.auth.icloud_session.status", lambda *a, **k: status)
+
+    result = invoke("auth", "status")
+    assert result.exit_code == 0
+    assert ACCOUNT in result.output
+
+
+def test_login_records_the_account(invoke, fake_connect, monkeypatch, data_dir):
+    login_ok(invoke, monkeypatch)
+    assert session_mod.recall_account(data_dir) == ACCOUNT
+
+
+def test_a_failed_login_records_nothing(invoke, monkeypatch, data_dir):
+    """A bogus account must not become the default for later commands."""
+    monkeypatch.setattr("isynca.cli.auth.typer.prompt", lambda *a, **k: "pw")
+
+    def boom(**kwargs):
+        raise AuthenticationError("credentials rejected")
+
+    monkeypatch.setattr("isynca.cli.auth.icloud_session.connect", boom)
+    invoke("auth", "login", "--apple-id", ACCOUNT)
+    assert session_mod.recall_account(data_dir) is None
+
+
+def test_status_accepts_its_own_apple_id_option(invoke, monkeypatch):
+    """It used to be accepted only before the subcommand, unlike login."""
+    status = session_mod.SessionStatus(
+        apple_id="other@example.com",
+        authenticated=True,
+        trusted=True,
+        requires_2fa=False,
+        password_stored=False,
+    )
+    monkeypatch.setattr("isynca.cli.auth.icloud_session.status", lambda *a, **k: status)
+    result = invoke("auth", "status", "--apple-id", "other@example.com")
+    assert result.exit_code == 0
+
+
+def test_logout_accepts_its_own_apple_id_option(invoke):
+    assert invoke("auth", "logout", "--apple-id", ACCOUNT).exit_code == 0
+
+
+def test_logout_forgets_the_account(invoke, fake_connect, monkeypatch, data_dir):
+    login_ok(invoke, monkeypatch)
+    invoke("auth", "logout")
+
+    assert session_mod.recall_account(data_dir) is None
+    assert invoke("auth", "status").exit_code != 0
+
+
+def test_an_explicit_apple_id_beats_the_remembered_one(
+    invoke, fake_connect, monkeypatch, data_dir
+):
+    login_ok(invoke, monkeypatch)
+    seen = []
+
+    def record(account, **kwargs):
+        seen.append(account)
+        return session_mod.SessionStatus(
+            apple_id=account,
+            authenticated=True,
+            trusted=True,
+            requires_2fa=False,
+            password_stored=False,
+        )
+
+    monkeypatch.setattr("isynca.cli.auth.icloud_session.status", record)
+    invoke("auth", "status", "--apple-id", "override@example.com")
+    assert seen == ["override@example.com"]
+
+
+def test_the_remembered_account_reaches_other_commands(
+    invoke, fake_connect, monkeypatch, data_dir, tmp_path
+):
+    """Not just auth: an upload should not need the account repeated either."""
+    login_ok(invoke, monkeypatch)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    result = invoke("photos", "upload", str(empty))
+    assert result.exit_code == 0

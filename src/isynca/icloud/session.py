@@ -176,6 +176,42 @@ def forget_password(apple_id: str) -> bool:
     return True
 
 
+ACCOUNT_FILE = "account"
+"""Name of the file recording the last account signed in successfully.
+
+Which account you last logged in as is session state, not configuration, so
+it lives beside the cookies rather than being written into the user's
+config.toml -- rewriting that file would discard their comments and layout.
+"""
+
+
+def remember_account(data_dir: Path, apple_id: str) -> None:
+    """Record ``apple_id`` as the account later commands should default to."""
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / ACCOUNT_FILE).write_text(f"{apple_id}\n", encoding="utf-8")
+    except OSError as exc:  # pragma: no cover - unwritable data dir
+        LOGGER.warning("Could not remember the signed-in account: %s", exc)
+
+
+def recall_account(data_dir: Path) -> str | None:
+    """Return the last account signed in, or ``None`` if there is none."""
+    try:
+        stored = (data_dir / ACCOUNT_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return stored or None
+
+
+def forget_account(data_dir: Path) -> bool:
+    """Drop the remembered account; return whether one was recorded."""
+    path = data_dir / ACCOUNT_FILE
+    if not path.is_file():
+        return False
+    path.unlink()
+    return True
+
+
 def clear_cookies(cookie_dir: Path) -> int:
     """Delete stored session cookies; return the number of files removed."""
     if not cookie_dir.is_dir():

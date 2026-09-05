@@ -240,3 +240,53 @@ def test_session_status_usable_requires_everything():
         password_stored=True,
     )
     assert not status.usable
+
+
+# --- remembering the signed-in account ---------------------------------------
+
+
+def test_recall_without_a_stored_account(tmp_path):
+    assert mod.recall_account(tmp_path) is None
+
+
+def test_remember_then_recall(tmp_path):
+    mod.remember_account(tmp_path, ACCOUNT)
+    assert mod.recall_account(tmp_path) == ACCOUNT
+
+
+def test_remember_creates_the_data_directory(tmp_path):
+    target = tmp_path / "nested" / "state"
+    mod.remember_account(target, ACCOUNT)
+    assert mod.recall_account(target) == ACCOUNT
+
+
+def test_remember_replaces_a_previous_account(tmp_path):
+    mod.remember_account(tmp_path, "first@example.com")
+    mod.remember_account(tmp_path, "second@example.com")
+    assert mod.recall_account(tmp_path) == "second@example.com"
+
+
+def test_recall_ignores_an_empty_file(tmp_path):
+    (tmp_path / mod.ACCOUNT_FILE).write_text("   \n")
+    assert mod.recall_account(tmp_path) is None
+
+
+def test_recall_strips_whitespace(tmp_path):
+    (tmp_path / mod.ACCOUNT_FILE).write_text(f"  {ACCOUNT}  \n")
+    assert mod.recall_account(tmp_path) == ACCOUNT
+
+
+def test_recall_survives_an_unreadable_path(tmp_path):
+    """A directory where the account file should be must not raise."""
+    (tmp_path / mod.ACCOUNT_FILE).mkdir()
+    assert mod.recall_account(tmp_path) is None
+
+
+def test_forget_account(tmp_path):
+    mod.remember_account(tmp_path, ACCOUNT)
+    assert mod.forget_account(tmp_path) is True
+    assert mod.recall_account(tmp_path) is None
+
+
+def test_forget_account_when_none_stored(tmp_path):
+    assert mod.forget_account(tmp_path) is False

@@ -27,8 +27,9 @@ class AppContext:
         """Return the configured Apple ID, or fail with clear guidance."""
         if not self.config.apple_id:
             raise ConfigError(
-                "No Apple ID configured. Pass --apple-id, set ISYNCA_APPLE_ID, "
-                "or add apple_id to your config.toml."
+                "No Apple ID configured. Run 'isynca auth login --apple-id "
+                "you@example.com' once, or pass --apple-id, set "
+                "ISYNCA_APPLE_ID, or add apple_id to your config.toml."
             )
         return self.config.apple_id
 

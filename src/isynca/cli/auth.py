@@ -12,13 +12,15 @@ from isynca.icloud import session as icloud_session
 
 app = typer.Typer(help="Manage the stored iCloud session.", no_args_is_help=True)
 
+AppleIdOpt = Annotated[
+    str | None, typer.Option("--apple-id", help="Apple ID to act on.")
+]
+
 
 @app.command("login")
 def login(
     ctx: typer.Context,
-    apple_id: Annotated[
-        str | None, typer.Option("--apple-id", help="Apple ID to sign in as.")
-    ] = None,
+    apple_id: AppleIdOpt = None,
     store_password: Annotated[
         bool,
         typer.Option("--store-password", help="Save the password in the keyring."),
@@ -43,14 +45,17 @@ def login(
         icloud_session.save_password(account, password)
         console.print("Password saved to the system keyring.")
 
+    # Only after the connection succeeded, so a failed attempt does not leave
+    # a bogus account behind for later commands to default to.
+    icloud_session.remember_account(app_ctx.config.data_dir, account)
     console.print(f"[green]Signed in as {account}.[/green]")
 
 
 @app.command("status")
-def status(ctx: typer.Context) -> None:
+def status(ctx: typer.Context, apple_id: AppleIdOpt = None) -> None:
     """Report whether the stored session can be used without prompting."""
     app_ctx = get_context(ctx)
-    account = app_ctx.require_apple_id()
+    account = apple_id or app_ctx.require_apple_id()
     result = icloud_session.status(account, cookie_dir=app_ctx.config.cookie_dir)
 
     table = Table(title=f"Session for {result.apple_id}", show_header=False)
@@ -69,13 +74,14 @@ def status(ctx: typer.Context) -> None:
 
 
 @app.command("logout")
-def logout(ctx: typer.Context) -> None:
-    """Delete the stored session cookies and any keyring password."""
+def logout(ctx: typer.Context, apple_id: AppleIdOpt = None) -> None:
+    """Delete the stored session cookies, keyring password, and account."""
     app_ctx = get_context(ctx)
-    account = app_ctx.require_apple_id()
+    account = apple_id or app_ctx.require_apple_id()
 
     removed = icloud_session.clear_cookies(app_ctx.config.cookie_dir)
     had_password = icloud_session.forget_password(account)
+    icloud_session.forget_account(app_ctx.config.data_dir)
 
     app_ctx.console.print(f"Removed {removed} cookie file(s).")
     app_ctx.console.print(
