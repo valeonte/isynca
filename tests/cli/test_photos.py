@@ -22,6 +22,12 @@ def uploads(fake):
     return sorted(path.rsplit("/", 1)[-1] for path, _ in fake.photos_service.uploaded)
 
 
+def _summary_value(output, label):
+    """Return the number rich printed beside ``label`` in the summary table."""
+    line = next(text for text in output.splitlines() if label in text)
+    return line.rsplit("\u2502", 2)[-2].strip()
+
+
 def test_scan_lists_video_and_images_by_default(invoke, tree):
     result = invoke("photos", "scan", str(tree))
     assert result.exit_code == 0
@@ -362,6 +368,76 @@ def test_archive_of_a_single_file_source(invoke, tree, fake_icloud, tmp_path):
 def test_archive_appears_in_help(runner):
     result = runner.invoke(app, ["photos", "--help"])
     assert "archive" in result.output
+
+
+# --- pruning emptied folders -------------------------------------------------
+
+
+def test_archive_prunes_the_folders_it_empties(invoke, tree, fake_icloud, tmp_path):
+    result = invoke(
+        "--apple-id",
+        ACCOUNT,
+        "photos",
+        "archive",
+        str(tree),
+        "--to",
+        str(tmp_path / "archive"),
+    )
+
+    assert result.exit_code == 0
+    assert not (tree / "trip" / "day1").exists(), "its only file was archived"
+    assert (tree / "trip").is_dir(), "song.mp3 is still there"
+    assert (tree / "docs").is_dir(), "notes.txt is still there"
+    assert tree.is_dir(), "the source root always survives"
+    assert _summary_value(result.output, "Empty folders removed") == "1"
+
+
+def test_archive_keeps_empty_folders_when_asked(invoke, tree, fake_icloud, tmp_path):
+    result = invoke(
+        "--apple-id",
+        ACCOUNT,
+        "photos",
+        "archive",
+        str(tree),
+        "--to",
+        str(tmp_path / "archive"),
+        "--no-prune-empty-dirs",
+    )
+
+    assert result.exit_code == 0
+    assert (tree / "trip" / "day1").is_dir()
+    assert "Empty folders removed" not in result.output
+
+
+def test_archive_dry_run_previews_the_pruning_without_doing_it(
+    invoke, tree, fake_icloud, tmp_path
+):
+    """The files are all still on disk, so the preview has to reason ahead."""
+    result = invoke(
+        "--apple-id",
+        ACCOUNT,
+        "photos",
+        "archive",
+        str(tree),
+        "--to",
+        str(tmp_path / "archive"),
+        "--dry-run",
+    )
+
+    assert (tree / "trip" / "day1").is_dir()
+    assert "Empty folders removed" in result.output
+    assert _summary_value(result.output, "Empty folders removed") == "1"
+
+
+def test_upload_never_prunes(invoke, tree, fake_icloud):
+    """An upload empties nothing; a folder already empty is not its business."""
+    empty = tree / "trip" / "nothing-here"
+    empty.mkdir()
+
+    result = invoke("--apple-id", ACCOUNT, "photos", "upload", str(tree))
+
+    assert empty.is_dir()
+    assert "Empty folders removed" not in result.output
 
 
 # --- capture-date requirement -----------------------------------------------

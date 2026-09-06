@@ -25,7 +25,7 @@ from isynca.ledger.store import Ledger, UploadStatus
 from isynca.media.capture import read_capture_date
 from isynca.media.scanner import Scanner
 from isynca.media.types import MediaKind
-from isynca.sync.archiver import Archiver, validate_target
+from isynca.sync.archiver import Archiver, prune_empty_dirs, validate_target
 from isynca.sync.planner import PlannedUpload, Planner, SkipReason, UploadPlan
 from isynca.sync.report import RunReport, format_bytes
 from isynca.sync.runner import UploadRunner
@@ -65,6 +65,13 @@ RequireDateOpt = Annotated[
     typer.Option(
         "--require-date-taken/--no-require-date-taken",
         help="Report and hold back files with no capture date.",
+    ),
+]
+PruneOpt = Annotated[
+    bool | None,
+    typer.Option(
+        "--prune-empty-dirs/--no-prune-empty-dirs",
+        help="Remove folders left empty under the sources. [default: prune]",
     ),
 ]
 
@@ -182,6 +189,7 @@ def archive(
     min_size: MinSizeOpt = None,
     exclude: ExcludeOpt = None,
     follow_symlinks: SymlinksOpt = False,
+    prune_empty_dirs: PruneOpt = None,
 ) -> None:
     """Upload media, then move what iCloud holds into another folder.
 
@@ -189,6 +197,10 @@ def archive(
     moved under the target, keeping its path relative to the source it was
     found under. A file whose upload was accepted but not yet indexed is left
     where it is, and an existing file at the destination is never overwritten.
+
+    Folders under the sources that the move leaves empty are removed;
+    ``--no-prune-empty-dirs`` keeps the empty structure standing. The sources
+    themselves are never removed.
     """
     app_ctx = get_context(ctx)
     config = app_ctx.config.with_overrides(
@@ -200,6 +212,7 @@ def archive(
         min_size=min_size,
         exclude=tuple(exclude) if exclude else None,
         follow_symlinks=follow_symlinks or None,
+        prune_empty_dirs=prune_empty_dirs,
     )
     validate_target(to, sources)
     _run(app_ctx, sources, config, limit, archiver=Archiver(to, config.dry_run))
@@ -250,9 +263,29 @@ def _run(
 
         report = _execute(plan, uploader, ledger, config, app_ctx.err_console, archiver)
 
+    _prune(sources, config, archiver, report)
     _print_report(console, report)
     if not report.ok:
         raise typer.Exit(code=1)
+
+
+def _prune(
+    sources: list[Path],
+    config: Config,
+    archiver: Archiver | None,
+    report: RunReport,
+) -> None:
+    """Clear the folders an archive run emptied, if pruning is on.
+
+    Only an archive run empties anything, so an upload never prunes however
+    the setting is left; the folders it would find empty were empty before it
+    ran and are none of its business.
+    """
+    if archiver is None or not config.prune_empty_dirs:
+        return
+    report.pruning = True
+    emptied = prune_empty_dirs(sources, dry_run=config.dry_run, moved=archiver.moved)
+    report.record_prune(len(emptied))
 
 
 def _build_scanner(config: Config) -> Scanner:

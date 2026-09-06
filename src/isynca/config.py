@@ -53,6 +53,7 @@ class Config:
     follow_symlinks: bool = False
     exclude: tuple[str, ...] = ()
     dry_run: bool = False
+    prune_empty_dirs: bool = True
     verbose: bool = False
 
     @property
@@ -82,6 +83,7 @@ _FIELD_TYPES: dict[str, type] = {
     "require_date_taken": bool,
     "min_size": int,
     "follow_symlinks": bool,
+    "prune_empty_dirs": bool,
     "verbose": bool,
 }
 
