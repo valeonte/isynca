@@ -7,6 +7,8 @@ version = "0.1.0"
 [dependencies]
 python = "3.14.*"
 pillow = ">=12.3.0"
+# Pure-python D-Bus, for the desktop notification sent at the end of a run.
+jeepney = ">=0.9"
 
 [pypi-dependencies]
 isynca = { path = ".", editable = true }

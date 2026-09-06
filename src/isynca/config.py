@@ -17,6 +17,9 @@ from isynca.errors import ConfigError
 APP_NAME = "isynca"
 ENV_PREFIX = "ISYNCA_"
 
+NOTIFY_LEVELS = ("WARNING", "ERROR", "CRITICAL")
+"""Levels that may be notified about. Anything quieter is normal progress."""
+
 
 def _xdg_dir(env_var: str, default: str) -> Path:
     """Return an XDG base directory, honouring the environment variable.
@@ -55,6 +58,22 @@ class Config:
     dry_run: bool = False
     prune_empty_dirs: bool = True
     verbose: bool = False
+    notify: bool = True
+    notify_level: str = "WARNING"
+
+    def __post_init__(self) -> None:
+        """Normalise and check the notification level.
+
+        Done here rather than at the CLI so that a level coming from the
+        config file or the environment is caught just as early.
+        """
+        level = str(self.notify_level).upper()
+        if level not in NOTIFY_LEVELS:
+            raise ConfigError(
+                f"notify_level must be one of {', '.join(NOTIFY_LEVELS)}, "
+                f"not {self.notify_level!r}"
+            )
+        object.__setattr__(self, "notify_level", level)
 
     @property
     def ledger_path(self) -> Path:
@@ -85,6 +104,8 @@ _FIELD_TYPES: dict[str, type] = {
     "follow_symlinks": bool,
     "prune_empty_dirs": bool,
     "verbose": bool,
+    "notify": bool,
+    "notify_level": str,
 }
 
 

@@ -17,6 +17,7 @@ dependencies = [
     "rich>=15.0.0",
     "pillow>=12.3.0",
     "pillow-heif>=1.6.0",
+    "jeepney>=0.9",
 ]
 
 [project.scripts]

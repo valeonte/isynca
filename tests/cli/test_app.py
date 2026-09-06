@@ -1,3 +1,5 @@
+import logging
+
 import click
 import pytest
 import typer
@@ -10,6 +12,7 @@ from isynca.cli.app import app, main
 from isynca.cli.context import AppContext, get_context
 from isynca.config import Config
 from isynca.errors import ConfigError
+from isynca.notify import NotificationCollector, NotifySession
 
 
 def test_version_flag(runner):
@@ -130,3 +133,82 @@ def test_get_context_rejects_a_missing_context():
 
 def test_module_entry_point_is_importable():
     assert entry.main is main
+
+
+def _collecting():
+    """Return whether the isynca logger is feeding a notification collector."""
+    return any(
+        isinstance(handler, NotificationCollector)
+        for handler in logging.getLogger("isynca").handlers
+    )
+
+
+@pytest.fixture
+def desktop(monkeypatch):
+    """Pretend a notification daemon is listening."""
+    notifier = _CollectingNotifier()
+    monkeypatch.setattr("isynca.notify.session.detect", lambda environ=None: notifier)
+    return notifier
+
+
+def test_a_desktop_run_collects_warnings_without_being_asked(invoke, desktop):
+    """Every existing LOGGER.warning is covered by the handler, not by edits."""
+    assert invoke("ledger", "stats").exit_code == 0
+    assert _collecting()
+
+
+def test_no_notify_switches_the_collector_off(invoke, desktop):
+    assert invoke("--no-notify", "ledger", "stats").exit_code == 0
+    assert not _collecting()
+
+
+def test_notify_off_in_the_environment_is_honoured(invoke, desktop, monkeypatch):
+    monkeypatch.setenv("ISYNCA_NOTIFY", "false")
+    assert invoke("ledger", "stats").exit_code == 0
+    assert not _collecting()
+
+
+def test_nothing_collects_without_a_desktop_session(invoke):
+    """No session bus -- cron, ssh, CI -- and the whole feature stays out."""
+    assert invoke("ledger", "stats").exit_code == 0
+    assert not _collecting()
+
+
+def test_main_closes_the_session_after_a_fatal_error(monkeypatch):
+    """The error that aborted a run is exactly what you want notified."""
+    notifier = _CollectingNotifier()
+    monkeypatch.setattr(
+        "isynca.cli.app.NotifySession",
+        lambda: _armed_session(notifier),
+    )
+
+    def boom(**kwargs):
+        raise ConfigError("no Apple ID configured")
+
+    monkeypatch.setattr("isynca.cli.app.app", boom)
+    assert main() == 1
+    assert notifier.sent[0].summary == "isynca: run failed"
+    assert "no Apple ID configured" in notifier.sent[0].body
+
+
+def test_main_closes_the_session_on_success(monkeypatch):
+    notifier = _CollectingNotifier()
+    session = _armed_session(notifier)
+    monkeypatch.setattr("isynca.cli.app.NotifySession", lambda: session)
+    monkeypatch.setattr("isynca.cli.app.app", lambda **kwargs: None)
+    assert main() == 0
+    assert notifier.sent == []
+
+
+class _CollectingNotifier:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, notification):
+        self.sent.append(notification)
+
+
+def _armed_session(notifier):
+    session = NotifySession(notifier=notifier)
+    session.arm(Config())
+    return session
