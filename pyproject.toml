@@ -1,0 +1,111 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "isynca"
+version = "0.1.0"
+description = "Modular iCloud syncing toolkit: bulk media upload to iCloud Photos and related operations."
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+authors = [{ name = "valeonte", email = "valeontis@gmail.com" }]
+dependencies = [
+    "pyicloud>=2.7.0",
+    "typer>=0.16.1",
+    "click>=8.4.1",
+    "rich>=15.0.0",
+    "pillow>=12.3.0",
+    "pillow-heif>=1.6.0",
+]
+
+[project.scripts]
+isynca = "isynca.cli.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/isynca"]
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "F",    # pyflakes
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "A",    # flake8-builtins
+    "C4",   # flake8-comprehensions
+    "DTZ",  # flake8-datetimez
+    "PTH",  # flake8-use-pathlib
+    "SIM",  # flake8-simplify
+    "RET",  # flake8-return
+    "ARG",  # flake8-unused-arguments
+    "TID",  # flake8-tidy-imports
+    "PL",   # pylint
+    "RUF",  # ruff-specific
+    "D",    # pydocstyle
+    "ANN",  # flake8-annotations
+]
+ignore = [
+    "D107",    # __init__ docstring: covered by the class docstring
+    "D203",    # incompatible with D211
+    "D213",    # incompatible with D212
+    "PLR0913", # explicit keyword-heavy constructors are intentional here
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer commands map one CLI option to one parameter; a long signature is the
+# point, not a smell.
+"src/isynca/cli/*" = ["PLR0917"]
+# ISO-BMFF field widths are 4 and 8 bytes by specification. Naming those
+# numbers hides what the parser is doing rather than explaining it.
+"src/isynca/media/capture.py" = ["PLR2004"]
+# EXIF timestamps carry no timezone, so the expected values here are naive on
+# purpose -- that is exactly what these assertions are checking.
+"tests/media/test_capture.py" = ["DTZ001"]
+# Test stubs routinely accept arguments they ignore; that is the point of a
+# stub, not an oversight.
+"tests/*" = [
+    "D100", "D101", "D102", "D103", "D104",
+    "ANN", "PLR2004", "ARG001", "ARG002", "ARG005",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--disable-socket",
+    "--cov=isynca",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+    "--cov-fail-under=100",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["src/isynca"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
+
+[tool.ty.environment]
+python-version = "3.14"
