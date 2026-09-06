@@ -19,7 +19,9 @@ not indexed in time, and re-sending them on the next run would buy nothing.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from http import HTTPStatus
 from pathlib import Path
 from typing import cast
 
@@ -41,6 +43,23 @@ from isynca.logging import get_logger
 LOGGER = get_logger("photos")
 
 _DUPLICATE_MARKERS = ("duplicate", "already exists")
+
+_RETRYABLE_CLIENT_STATUSES = frozenset(
+    {HTTPStatus.REQUEST_TIMEOUT, HTTPStatus.TOO_MANY_REQUESTS}
+)
+"""The 4xx statuses that describe a moment rather than the file itself."""
+
+_STATUS_HINTS: dict[int, str] = {
+    HTTPStatus.UNAUTHORIZED: "the iCloud session is no longer accepted",
+    HTTPStatus.FORBIDDEN: "iCloud refused this account access to the library",
+    HTTPStatus.REQUEST_ENTITY_TOO_LARGE: "the file is bigger than iCloud accepts",
+    HTTPStatus.UNSUPPORTED_MEDIA_TYPE: (
+        "iCloud Photos will not take this file's container, format, or codec"
+    ),
+    HTTPStatus.TOO_MANY_REQUESTS: "iCloud is rate limiting this account",
+    HTTPStatus.INSUFFICIENT_STORAGE: "the iCloud storage plan is full",
+}
+"""What the statuses Apple returns for a rejected file mean in practice."""
 
 PRIMARY_ZONE_NAME = str(PRIMARY_ZONE["zoneName"])
 """The CloudKit zone holding the account's own library."""
@@ -139,7 +158,10 @@ class PhotosUploader:
         try:
             result = client.upload_file(str(path), zone_name=PRIMARY_ZONE_NAME)
         except CloudKitApiError as exc:
-            raise UploadError(f"Upload of {path} failed: {exc}") from exc
+            raise UploadError(
+                f"Upload of {path} failed: {_describe(exc)}",
+                retryable=_is_retryable(exc),
+            ) from exc
         except PyiCloudException as exc:
             raise UploadError(f"Upload of {path} failed: {exc}") from exc
         except OSError as exc:
@@ -179,7 +201,8 @@ class PhotosUploader:
         except (CloudKitApiError, PyiCloudException) as exc:
             raise UploadError(
                 f"{path} reached iCloud but could not be added to "
-                f"{self._album_name!r}: {exc}"
+                f"{self._album_name!r}: {_describe(exc)}",
+                retryable=_is_retryable(exc),
             ) from exc
 
     def _upload_and_wait(self, path: Path, album: str | None) -> UploadOutcome:
@@ -219,6 +242,87 @@ def _direct_client(service: PhotosServiceLike) -> DirectUploadLike | None:
         LOGGER.debug("No CloudKit upload client; falling back to the slow upload")
         return None
     return client
+
+
+def _describe(exc: Exception) -> str:
+    """Return the error text with Apple's own explanation appended.
+
+    pyicloud reports a rejected file as a bare status number and hangs the
+    per-file response block off a :class:`CloudKitApiError` as ``payload``.
+    That block holds what the number means, any message Apple wrote, and
+    whether a retry could ever succeed -- the parts that say what to do about
+    the file. An error carrying no such block is returned as it stands.
+    """
+    detail = "; ".join(_failure_details(getattr(exc, "payload", None)))
+    return f"{exc} ({detail})" if detail else str(exc)
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Return whether trying ``exc``'s file again could plausibly work.
+
+    Apple answers that question outright with ``isRetryable``, but omits the
+    flag on some rejections, so the status stands in for it: a 4xx is a
+    verdict on the request itself -- an unsupported codec, a file too large, a
+    session iCloud will not accept -- and re-sending the same bytes only earns
+    the same verdict. The exceptions are the two 4xx that describe a moment
+    rather than the file. Anything with no failure block, a 5xx included,
+    keeps the benefit of the doubt.
+    """
+    response = _failure_block(getattr(exc, "payload", None))
+    return True if response is None else _block_is_retryable(response)
+
+
+def _block_is_retryable(response: Mapping[str, object]) -> bool:
+    """Return whether a per-file response block leaves room for another try."""
+    if response.get("isRetryable") is False:
+        return False
+    status = response.get("status")
+    if not isinstance(status, int):
+        return True
+    return (
+        not HTTPStatus.BAD_REQUEST <= status < HTTPStatus.INTERNAL_SERVER_ERROR
+        or status in _RETRYABLE_CLIENT_STATUSES
+    )
+
+
+def _failure_block(payload: object) -> Mapping[str, object] | None:
+    """Return the per-file response block of a ``putAsset`` failure payload.
+
+    Only that payload has this shape; the other CloudKit calls attach a raw
+    body, which carries none of the fields read here.
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    response = payload.get("response")
+    return response if isinstance(response, Mapping) else None
+
+
+def _failure_details(payload: object) -> list[str]:
+    """Return the readable parts of a ``putAsset`` failure payload."""
+    response = _failure_block(payload)
+    if response is None:
+        return []
+
+    details: list[str] = []
+    status = response.get("status")
+    if isinstance(status, int):
+        details.append(_status_text(status))
+    message = response.get("errorMessage")
+    if message:
+        details.append(f"Apple said: {message}")
+    if not _block_is_retryable(response):
+        details.append("retrying will not help")
+    return details
+
+
+def _status_text(status: int) -> str:
+    """Name an HTTP status, adding what it tends to mean for an upload."""
+    try:
+        phrase = HTTPStatus(status).phrase
+    except ValueError:
+        return f"unrecognised status {status}"
+    hint = _STATUS_HINTS.get(status)
+    return f"{phrase}: {hint}" if hint else phrase
 
 
 def _looks_like_duplicate(exc: Exception) -> bool:
