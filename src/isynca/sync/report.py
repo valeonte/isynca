@@ -33,6 +33,8 @@ class RunReport:
     moved: int = 0
     move_collisions: int = 0
     held_in_place: int = 0
+    pruning: bool = False
+    pruned_dirs: int = 0
     failures: list[Failure] = field(default_factory=list)
     move_failures: list[Failure] = field(default_factory=list)
 
@@ -92,6 +94,10 @@ class RunReport:
         """Count one file left in place because iCloud has not confirmed it."""
         self.held_in_place += 1
 
+    def record_prune(self, count: int) -> None:
+        """Count the empty folders removed after archiving."""
+        self.pruned_dirs += count
+
     def record_move_failure(self, path: Path, message: str) -> None:
         """Record a file that could not be moved into the target."""
         self.move_failures.append(Failure(path=path, message=message))
@@ -120,8 +126,10 @@ class RunReport:
                     ("Held (iCloud not confirmed)", str(self.held_in_place)),
                 ]
             )
+        if self.pruning:
+            rows.append(("Empty folders removed", str(self.pruned_dirs)))
         if self.dry_run:
-            mode = "dry run - nothing was uploaded or moved"
+            mode = "dry run - nothing was uploaded, moved, or removed"
             rows.insert(0, ("Mode", mode))
         return rows
 

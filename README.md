@@ -124,7 +124,25 @@ the first would be re-scanned on the next run, the second would move files onto
 themselves.
 
 `--dry-run` previews the whole thing, including real collision checks, without
-uploading or moving anything.
+uploading, moving, or removing anything.
+
+### Empty folders
+
+Draining a tree leaves its folders standing, so an archive run finishes by
+removing the ones it emptied — deepest first, so a branch whose leaves all go
+takes its parents with it. `--no-prune-empty-dirs` leaves the structure in
+place instead, and `prune_empty_dirs = false` in the config file makes that the
+default.
+
+Three things are never removed: the source folders you named on the command
+line, even once they are empty; anything still holding a file, including one
+`isynca` never looks at, such as a stray `.txt` or an audio file; and symlinks,
+which count as content rather than as folders to descend into. A folder that
+cannot be removed is logged and left behind — a folder outliving its files is
+untidy, not a failure, and the run still exits 0.
+
+`upload` never prunes: it empties nothing, so a folder that was already empty
+is none of its business.
 
 ## How re-runs stay cheap
 
@@ -160,6 +178,7 @@ images = true
 videos = true
 min_size = 1024
 exclude = ["*/.Trash/*", "*.partial"]
+prune_empty_dirs = true
 ```
 
 State lives under the XDG directories: the ledger and session cookies in
