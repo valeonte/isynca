@@ -209,6 +209,6 @@ def api_error(message: str) -> PyiCloudAPIResponseException:
     return PyiCloudAPIResponseException(message)
 
 
-def cloudkit_error(message: str) -> CloudKitApiError:
-    """Build a CloudKit error carrying ``message``."""
-    return CloudKitApiError(message)
+def cloudkit_error(message: str, payload: object | None = None) -> CloudKitApiError:
+    """Build a CloudKit error carrying ``message`` and Apple's ``payload``."""
+    return CloudKitApiError(message, payload=payload)

@@ -8,7 +8,7 @@ from isynca.ledger.store import UploadStatus
 from isynca.sync.archiver import Archiver
 from isynca.sync.planner import PlannedUpload, SkippedUpload, SkipReason, UploadPlan
 from isynca.sync.runner import RetryPolicy, UploadRunner
-from tests.fakes.icloud import FakeRegistration
+from tests.fakes.icloud import FakeRegistration, cloudkit_error
 
 
 def plan_with(*media, skipped=()):
@@ -126,6 +126,23 @@ def test_failure_is_recorded_after_attempts_are_exhausted(session, ledger, make_
     assert not report.ok
     assert report.failures[0].path == media.path
     assert ledger.lookup(hash_file(media.path)) is None
+
+
+def test_a_settled_rejection_is_not_retried(session, ledger, make_media):
+    """A refusal of the file itself is an answer, not a bad moment."""
+    session.photos_service.upload_results = [
+        cloudkit_error(
+            "rejected with status 415", payload={"response": {"status": 415}}
+        ),
+        None,
+    ]
+    delays = []
+    media = make_media()
+    report = build(session, ledger, sleep=delays.append).run(plan_with(media))
+
+    assert report.failed == 1
+    assert delays == []
+    assert session.photos_service.uploaded == [(str(media.path), None)]
 
 
 def test_a_failure_does_not_stop_later_files(session, ledger, make_media):

@@ -123,6 +123,115 @@ def test_cloudkit_error_becomes_upload_error(session):
         PhotosUploader(session).upload(Path("/a.mp4"))
 
 
+def test_rejection_reports_what_the_status_means(session):
+    """A bare status number says nothing; Apple's own block says plenty."""
+    session.photos_service.upload_results = [
+        cloudkit_error(
+            "Photos putAsset rejected a.mp4 with status 415",
+            payload={
+                "response": {
+                    "status": 415,
+                    "isRetryable": False,
+                    "errorMessage": "unsupported asset type",
+                }
+            },
+        )
+    ]
+    with pytest.raises(UploadError) as raised:
+        PhotosUploader(session).upload(Path("/a.mp4"))
+
+    message = str(raised.value)
+    assert "Unsupported Media Type" in message
+    assert "container, format, or codec" in message
+    assert "Apple said: unsupported asset type" in message
+    assert "retrying will not help" in message
+    assert raised.value.retryable is False
+
+
+@pytest.mark.parametrize(
+    ("response", "retryable"),
+    [
+        ({"status": 415}, False),
+        ({"status": 413}, False),
+        ({"status": 408}, True),
+        ({"status": 429}, True),
+        ({"status": 500}, True),
+        ({"status": 503, "isRetryable": False}, False),
+        ({"status": None}, True),
+        ({}, True),
+    ],
+    ids=[
+        "unsupported",
+        "too-large",
+        "timeout",
+        "rate-limited",
+        "server-fault",
+        "apple-says-no",
+        "no-status",
+        "empty",
+    ],
+)
+def test_retryability_follows_apple(session, response, retryable):
+    """A verdict on the file is settled; a bad moment is not."""
+    session.photos_service.upload_results = [
+        cloudkit_error("rejected", payload={"response": response})
+    ]
+    with pytest.raises(UploadError) as raised:
+        PhotosUploader(session).upload(Path("/a.mp4"))
+
+    assert raised.value.retryable is retryable
+
+
+def test_an_error_without_a_failure_block_stays_retryable(session):
+    session.photos_service.upload_results = [cloudkit_error("connection reset")]
+    with pytest.raises(UploadError) as raised:
+        PhotosUploader(session).upload(Path("/a.mp4"))
+
+    assert raised.value.retryable is True
+
+
+def test_rejection_names_a_status_without_a_hint(session):
+    session.photos_service.upload_results = [
+        cloudkit_error("rejected", payload={"response": {"status": 400}})
+    ]
+    with pytest.raises(UploadError, match=r"\(Bad Request; retrying will not help\)"):
+        PhotosUploader(session).upload(Path("/a.mp4"))
+
+
+def test_rejection_with_an_unknown_status_still_reads(session):
+    session.photos_service.upload_results = [
+        cloudkit_error("rejected", payload={"response": {"status": 599}})
+    ]
+    with pytest.raises(UploadError, match="unrecognised status 599"):
+        PhotosUploader(session).upload(Path("/a.mp4"))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [None, "plain text body", {"response": None}, {"response": {}}],
+    ids=["missing", "text", "no-block", "empty-block"],
+)
+def test_payloads_without_a_failure_block_leave_the_message_alone(session, payload):
+    session.photos_service.upload_results = [cloudkit_error("rejected", payload)]
+    with pytest.raises(UploadError) as raised:
+        PhotosUploader(session).upload(Path("/a.mp4"))
+
+    assert str(raised.value) == "Upload of /a.mp4 failed: rejected"
+
+
+def test_album_failure_also_explains_the_status(session):
+    session.photos_service.album_container.albums["Trip"] = FakeAlbum(
+        "Trip",
+        add_error=cloudkit_error(
+            "relation rejected", payload={"response": {"status": 429}}
+        ),
+    )
+    with pytest.raises(UploadError, match="rate limiting") as raised:
+        PhotosUploader(session, album="Trip").upload(Path("/a.mp4"))
+
+    assert raised.value.retryable is True
+
+
 @pytest.fixture
 def slow_session(session):
     """A session with no CloudKit client, forcing pyicloud's waiting upload."""

@@ -156,11 +156,13 @@ class UploadRunner:
         self._notify(item, outcome.status)
 
     def _upload_with_retries(self, item: PlannedUpload) -> UploadOutcome:
-        """Upload with bounded retries, giving up on fatal errors immediately.
+        """Upload with bounded retries, giving up on settled errors immediately.
 
         A :class:`FatalError` -- a revoked session, a vanished album -- is
         re-raised untouched, because retrying it would only repeat the same
-        failure for every remaining file.
+        failure for every remaining file. An :class:`ItemError` marked not
+        retryable is re-raised too: it concerns this file alone, but iCloud
+        has already given its final answer about it.
         """
         if self._uploader is None:  # pragma: no cover - guarded by _process
             raise FatalError("No uploader configured for a non-dry run")
@@ -171,7 +173,7 @@ class UploadRunner:
             except FatalError:
                 raise
             except ItemError as exc:
-                if attempt == self._retry.attempts:
+                if attempt == self._retry.attempts or not exc.retryable:
                     raise
                 delay = self._retry.delay_for(attempt)
                 LOGGER.warning(

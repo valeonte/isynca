@@ -37,7 +37,18 @@ class LedgerError(FatalError):
 
 
 class ItemError(IsyncaError):
-    """A single file could not be processed; the run continues."""
+    """A single file could not be processed; the run continues.
+
+    An item error is retried by default, since most of them -- a dropped
+    connection, a rate limit, a transient server fault -- clear on their own.
+    A raiser that knows the failure is settled, such as iCloud refusing a
+    file's format outright, passes ``retryable=False`` so the run stops
+    spending attempts on an answer that will not change.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class UploadError(ItemError):
