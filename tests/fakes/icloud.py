@@ -18,6 +18,7 @@ from pyicloud.common.cloudkit.client import CloudKitApiError
 from pyicloud.exceptions import PyiCloudAPIResponseException
 
 from isynca.icloud.protocols import PhotoAssetLike
+from tests.fakes.drive import FakeDriveService
 
 
 @dataclass
@@ -174,20 +175,29 @@ class FakePhotosService:
 
 @dataclass
 class FakeSession:
-    """An account session exposing a fake photos service."""
+    """An account session exposing fake photos and drive services."""
 
     photos_service: FakePhotosService = field(default_factory=FakePhotosService)
+    drive_service: FakeDriveService = field(default_factory=FakeDriveService)
     requires_2fa: bool = False
     is_trusted_session: bool = True
     code_valid: bool = True
     trust_result: bool = True
     validated_codes: list[str] = field(default_factory=list)
     trust_calls: int = 0
+    drive_error: Exception | None = None
 
     @property
     def photos(self) -> FakePhotosService:
         """Return the photos service."""
         return self.photos_service
+
+    @property
+    def drive(self) -> FakeDriveService:
+        """Return the drive service."""
+        if self.drive_error is not None:
+            raise self.drive_error
+        return self.drive_service
 
     def validate_2fa_code(self, code: str) -> bool:
         """Record and validate a 2FA code."""

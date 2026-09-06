@@ -61,3 +61,23 @@ class AlbumNotFoundError(FatalError):
 
 class ArchiveError(ItemError):
     """One file could not be moved into the archive target."""
+
+
+class DriveError(ItemError):
+    """One iCloud Drive file could not be transferred."""
+
+
+class DriveListingError(FatalError):
+    """A Drive folder could not be listed.
+
+    Fatal, unlike most per-folder trouble, because of what the sync does with
+    an empty folder: nothing in it locally and nothing in it remotely means
+    the files it used to hold were deleted on the other side. A folder that
+    *cannot be read* is indistinguishable from one that is genuinely empty,
+    so guessing would delete files nobody deleted. Stopping is the only safe
+    answer.
+    """
+
+
+class DriveNotAvailableError(FatalError):
+    """The account exposes no usable iCloud Drive service."""

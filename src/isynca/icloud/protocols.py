@@ -12,11 +12,21 @@ record and returns the hydrated asset (or ``None`` when the wait ran out),
 while the CloudKit client behind ``private_client`` returns the registration as
 soon as Apple has stored the bytes. isynca prefers the second -- see
 :mod:`isynca.icloud.photos` for why.
+
+The drive surface is declared at the *service* level rather than the node
+level. pyicloud models Drive as ``DriveNode`` objects that carry a connection
+and lazily cache their children, but every call isynca makes is available
+directly on ``DriveService`` and takes plain identifiers. Depending on the
+service alone keeps the fake a dictionary tree rather than an object graph,
+and keeps node caching -- which a sync run must never read stale -- out of the
+picture entirely.
 """
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import IO, Any, Protocol, runtime_checkable
+
+from requests import Response
 
 
 @runtime_checkable
@@ -133,12 +143,69 @@ class PhotosServiceLike(Protocol):
 
 
 @runtime_checkable
+class DriveServiceLike(Protocol):
+    """The iCloud Drive surface isynca depends on.
+
+    Every member is a plain call on pyicloud's ``DriveService``. Folder
+    listings come back as the raw ``retrieveItemDetailsInFolders`` payload --
+    a dict whose ``items`` key holds one dict per child -- because that is the
+    only shape Apple actually returns, and re-wrapping it in node objects only
+    to unwrap it again would buy nothing.
+    """
+
+    def get_node_data(
+        self,
+        drivewsid: str,
+        share_id: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return the folder node identified by ``drivewsid``, with its items."""
+        ...
+
+    def get_file(
+        self,
+        file_id: str,
+        zone: str = ...,
+        **kwargs: Any,  # noqa: ANN401 - passed straight through to requests
+    ) -> Response:
+        """Return a response streaming the content of one document."""
+        ...
+
+    def send_file(
+        self,
+        folder_id: str,
+        file_object: IO[bytes],
+        zone: str = ...,
+        **kwargs: Any,  # noqa: ANN401 - passed straight through to requests
+    ) -> None:
+        """Upload ``file_object`` into the folder identified by ``folder_id``.
+
+        The remote name is taken from ``file_object.name``, not from any
+        separate argument -- see :class:`~isynca.files.client.NamedReader` for
+        what that forces on callers.
+        """
+        ...
+
+    def create_folders(self, parent: str, name: str) -> Any:  # noqa: ANN401
+        """Create a folder called ``name`` under the ``parent`` drivewsid."""
+        ...
+
+    def move_items_to_trash(self, node_id: str, etag: str) -> Any:  # noqa: ANN401
+        """Move one node into Recently Deleted, where it stays recoverable."""
+        ...
+
+
+@runtime_checkable
 class ICloudSessionLike(Protocol):
     """The account-level surface isynca depends on."""
 
     @property
     def photos(self) -> PhotosServiceLike:
         """Return the photos service."""
+        ...
+
+    @property
+    def drive(self) -> DriveServiceLike:
+        """Return the iCloud Drive service."""
         ...
 
     @property
