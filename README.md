@@ -179,10 +179,61 @@ videos = true
 min_size = 1024
 exclude = ["*/.Trash/*", "*.partial"]
 prune_empty_dirs = true
+notify = true
+notify_level = "WARNING"
 ```
 
 State lives under the XDG directories: the ledger and session cookies in
 `~/.local/share/isynca/`, configuration in `~/.config/isynca/`.
+
+## Desktop notifications
+
+A run that logged anything worth seeing tells the desktop about it when it
+ends:
+
+```
+isynca: 1 error, 12 warnings
+upload refused: HEIC variant not accepted
+… and 12 more
+```
+
+Nothing is sent while the run is in progress. Warnings here are per-file --
+one unreadable folder, one photo with no capture date -- and a large scan logs
+hundreds of them, so they are counted and summarised into a single
+notification rather than popped one at a time. A run that takes more than
+twenty seconds also reports finishing, folded into the same notification:
+
+```
+isynca: Upload finished
+412 uploaded, 3 skipped · 12 warnings
+```
+
+Short runs stay silent unless something went wrong. An error that aborts a run
+is always notified, however briefly the run lasted.
+
+This turns itself on when there is a desktop to talk to and stays out of the
+way when there is not. The signal is a session bus address in the
+environment, so cron jobs, ssh sessions, and CI are silent without needing to
+be told. Delivery is the freedesktop `org.freedesktop.Notifications`
+interface, which KDE Plasma, GNOME, Cinnamon, and XFCE all implement, over
+[jeepney](https://pypi.org/project/jeepney/) -- no notification daemon of
+isynca's own, and no `notify-send` subprocess. A desktop that will not take
+the message is never a reason to fail a run that has otherwise finished.
+
+To switch it off, any of:
+
+```bash
+isynca --no-notify photos upload ~/Media   # this run
+export ISYNCA_NOTIFY=0                     # this shell
+```
+
+```toml
+[isynca]
+notify = false                             # always
+```
+
+`notify_level` raises the bar instead of removing it: `"ERROR"` reports only
+failures, leaving per-file warnings to the terminal.
 
 ## Development
 

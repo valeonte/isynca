@@ -10,11 +10,19 @@ from rich.logging import RichHandler
 LOGGER_NAME = "isynca"
 
 
-def configure(verbose: bool = False, console: Console | None = None) -> logging.Logger:
+def configure(
+    verbose: bool = False,
+    console: Console | None = None,
+    collector: logging.Handler | None = None,
+) -> logging.Logger:
     """Install a rich handler on the isynca logger and return it.
 
-    Repeated calls replace the existing handler rather than stacking a second
-    one, so a command that reconfigures logging does not double every line.
+    Repeated calls replace the existing handlers rather than stacking a second
+    set, so a command that reconfigures logging does not double every line.
+
+    ``collector`` is attached alongside the rich handler and follows the same
+    rule. It is how :class:`isynca.notify.session.NotifySession` gets to see
+    every warning and error without any call site knowing it exists.
     """
     logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
@@ -32,6 +40,8 @@ def configure(verbose: bool = False, console: Console | None = None) -> logging.
     )
     handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
+    if collector is not None:
+        logger.addHandler(collector)
     return logger
 
 

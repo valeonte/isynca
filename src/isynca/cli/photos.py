@@ -244,7 +244,7 @@ def _run(
         # uploaded on an earlier run are waiting to be moved out.
         if not plan.pending and archiver is None:
             console.print("[green]Nothing to upload; everything is up to date.[/green]")
-            _print_report(console, _empty_report(plan, config.dry_run))
+            _finish(app_ctx, _empty_report(plan, config.dry_run))
             return
 
         if plan.pending:
@@ -264,7 +264,7 @@ def _run(
         report = _execute(plan, uploader, ledger, config, app_ctx.err_console, archiver)
 
     _prune(sources, config, archiver, report)
-    _print_report(console, report)
+    _finish(app_ctx, report)
     if not report.ok:
         raise typer.Exit(code=1)
 
@@ -408,6 +408,36 @@ def _empty_report(plan: UploadPlan, dry_run: bool) -> RunReport:
     for skipped in plan.skipped:
         report.record_skip(skipped.reason)
     return report
+
+
+def _finish(app_ctx: AppContext, report: RunReport) -> None:
+    """Print the run summary, and offer the same story to the desktop.
+
+    Whether anything is actually shown is the session's call: a run short
+    enough to have been watched says nothing unless it logged a problem.
+    """
+    _print_report(app_ctx.console, report)
+    headline, details = _completion_text(report)
+    app_ctx.notify.finished(headline, details)
+
+
+def _completion_text(report: RunReport) -> tuple[str, str]:
+    """Return the headline and one-line detail for a finished run."""
+    if report.dry_run:
+        headline = "Dry run finished"
+    elif report.archiving:
+        headline = "Archive finished"
+    else:
+        headline = "Upload finished"
+
+    parts = [f"{report.uploaded} uploaded"]
+    if report.archiving:
+        parts.append(f"{report.moved} moved")
+    if report.skipped:
+        parts.append(f"{report.skipped} skipped")
+    if report.failed:
+        parts.append(f"{report.failed} failed")
+    return headline, ", ".join(parts)
 
 
 def _print_report(console: Console, report: RunReport) -> None:
