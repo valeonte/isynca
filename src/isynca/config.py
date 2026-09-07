@@ -57,6 +57,8 @@ class Config:
     exclude: tuple[str, ...] = ()
     dry_run: bool = False
     prune_empty_dirs: bool = True
+    max_deletes: int = 50
+    include_app_libraries: bool = False
     verbose: bool = False
     notify: bool = True
     notify_level: str = "WARNING"
@@ -85,6 +87,16 @@ class Config:
         """Return the directory pyicloud stores session cookies in."""
         return self.data_dir / "cookies"
 
+    @property
+    def sync_state_path(self) -> Path:
+        """Return the path of the iCloud Drive sync state database.
+
+        Kept apart from the photos ledger: that one is keyed by content hash
+        for a one-way flow, this one by path for a two-way one, and a single
+        file pretending to be both would serve neither.
+        """
+        return self.data_dir / "drive.db"
+
     def with_overrides(self, **overrides: Any) -> Config:  # noqa: ANN401
         """Return a copy with every non-``None`` override applied."""
         supplied = {key: value for key, value in overrides.items() if value is not None}
@@ -103,6 +115,8 @@ _FIELD_TYPES: dict[str, type] = {
     "min_size": int,
     "follow_symlinks": bool,
     "prune_empty_dirs": bool,
+    "max_deletes": int,
+    "include_app_libraries": bool,
     "verbose": bool,
     "notify": bool,
     "notify_level": str,

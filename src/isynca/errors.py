@@ -81,3 +81,12 @@ class DriveListingError(FatalError):
 
 class DriveNotAvailableError(FatalError):
     """The account exposes no usable iCloud Drive service."""
+
+
+class SyncStateError(FatalError):
+    """The sync state database could not be opened, read, or written.
+
+    Fatal because a sync without its memory is not a sync: it cannot tell a
+    new file from a deleted one, and would either re-upload everything or
+    delete it.
+    """

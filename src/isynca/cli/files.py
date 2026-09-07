@@ -11,11 +11,25 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 import typer
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
 
 from isynca.cli.context import AppContext, get_context
+from isynca.config import Config
 from isynca.errors import ConfigError
 from isynca.files.client import DriveClient
+from isynca.files.local import ExcludeRules, LocalScanner, LocalTree
+from isynca.files.planner import Direction, SyncAction, SyncPlan, SyncPlanner
+from isynca.files.report import SyncReport
+from isynca.files.runner import SyncRunner, check_deletion_threshold, remote_index
+from isynca.files.state import SyncState
 from isynca.files.types import RemoteNode
 from isynca.icloud import session as icloud_session
 from isynca.sync.report import format_bytes
@@ -130,3 +144,194 @@ def _resolve_folder(client: DriveClient, remote: str) -> RemoteNode:
             raise ConfigError(f"No such folder in iCloud Drive: {remote}")
         node = matches[0]
     return node
+
+
+DryRunOpt = Annotated[
+    bool,
+    typer.Option("--dry-run", help="Report what would happen, change nothing."),
+]
+PushOpt = Annotated[
+    bool,
+    typer.Option("--push-only", help="Apply local changes to iCloud; ignore its own."),
+]
+PullOpt = Annotated[
+    bool,
+    typer.Option("--pull-only", help="Apply iCloud's changes locally; ignore local."),
+]
+MaxDeletesOpt = Annotated[
+    int | None,
+    typer.Option("--max-deletes", help="Refuse a run deleting more than N items."),
+]
+ForceOpt = Annotated[
+    bool,
+    typer.Option("--force", help="Proceed past the deletion limit."),
+]
+ExcludeOpt = Annotated[
+    list[str] | None,
+    typer.Option("--exclude", help="Glob to skip, on both sides; repeatable."),
+]
+
+
+@app.command("sync")
+def sync(
+    ctx: typer.Context,
+    root: Annotated[
+        Path,
+        typer.Argument(
+            help="Local folder mirroring your iCloud Drive root.",
+            show_default=False,
+        ),
+    ],
+    dry_run: DryRunOpt = False,
+    push_only: PushOpt = False,
+    pull_only: PullOpt = False,
+    max_deletes: MaxDeletesOpt = None,
+    force: ForceOpt = False,
+    exclude: ExcludeOpt = None,
+    include_app_libraries: AppLibrariesOpt = False,
+) -> None:
+    """Sync a local folder against iCloud Drive, both ways.
+
+    New files move in whichever direction they appeared, edits follow
+    whichever side made them, and a file deleted on one side is deleted on
+    the other. What changed on *both* sides since the last run is never
+    guessed at: it is reported and left alone.
+
+    The first run against a folder has nothing recorded to compare with, so
+    files that already match by size are adopted rather than transferred, and
+    nothing is deleted -- there is no earlier agreement for a deletion to be
+    a departure from.
+    """
+    app_ctx = get_context(ctx)
+    config = app_ctx.config.with_overrides(
+        dry_run=dry_run or None,
+        max_deletes=max_deletes,
+        exclude=tuple(exclude) if exclude else None,
+        include_app_libraries=include_app_libraries or None,
+    )
+    if not root.expanduser().is_dir():
+        raise ConfigError(f"Not a folder: {root}")
+
+    direction = _direction(push_only, pull_only)
+    client = _connect(app_ctx)
+
+    with SyncState(config.sync_state_path) as state:
+        local, remote = _survey(client, root, config, app_ctx.err_console)
+        plan = SyncPlanner(direction=direction).plan(local, remote, state.records(root))
+        check_deletion_threshold(plan, config.max_deletes, force)
+        _print_conflicts(app_ctx.console, plan)
+
+        report = _execute(
+            plan, remote, client, state, root, config, app_ctx.err_console
+        )
+
+    report.direction = str(direction)
+    _finish(app_ctx, report)
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
+def _direction(push_only: bool, pull_only: bool) -> Direction:
+    """Resolve the direction flags into a single mode."""
+    if push_only and pull_only:
+        raise ConfigError("--push-only and --pull-only cancel out")
+    if push_only:
+        return Direction.PUSH
+    if pull_only:
+        return Direction.PULL
+    return Direction.BOTH
+
+
+def _survey(
+    client: DriveClient, root: Path, config: Config, console: Console
+) -> tuple[LocalTree, dict[PurePosixPath, RemoteNode]]:
+    """Read both sides, behind a spinner because the walk is the slow part."""
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Reading local folder...", total=None)
+        rules = ExcludeRules(config.exclude)
+        local = LocalScanner(exclude=rules).scan(root)
+        progress.update(task, description="Listing iCloud Drive...")
+        remote = remote_index(
+            client.walk(
+                include_app_libraries=config.include_app_libraries,
+                skip=rules.matches,
+            )
+        )
+    return local, remote
+
+
+def _execute(
+    plan: SyncPlan,
+    remote: dict[PurePosixPath, RemoteNode],
+    client: DriveClient,
+    state: SyncState,
+    root: Path,
+    config: Config,
+    console: Console,
+) -> SyncReport:
+    """Run the plan behind a progress bar covering its actions."""
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        actionable = len(plan.actions) - len(plan.conflicts)
+        task = progress.add_task("Syncing", total=actionable)
+
+        def advance(action: SyncAction) -> None:
+            progress.update(task, advance=1, description=f"{action.kind} {action.path}")
+
+        runner = SyncRunner(
+            client=client,
+            state=state,
+            root=root,
+            dry_run=config.dry_run,
+            progress=advance,
+        )
+        return runner.run(plan, remote)
+
+
+def _print_conflicts(console: Console, plan: SyncPlan) -> None:
+    """List the paths the run refuses to touch, and why."""
+    if not plan.conflicts:
+        return
+    table = Table(title="Conflicts - not synced")
+    table.add_column("Path", overflow="fold")
+    table.add_column("Why", overflow="fold")
+    for action in plan.conflicts:
+        table.add_row(str(action.path), action.detail)
+    console.print(table)
+
+
+def _finish(app_ctx: AppContext, report: SyncReport) -> None:
+    """Print the summary and offer the same story to the desktop."""
+    table = Table(title="Sync summary", show_header=False)
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right")
+    for label, value in report.summary_rows():
+        table.add_row(label, value)
+    app_ctx.console.print(table)
+
+    if report.failures:
+        failures = Table(title="Failures")
+        failures.add_column("Path", overflow="fold")
+        failures.add_column("Error", overflow="fold")
+        for failure in report.failures:
+            failures.add_row(str(failure.path), failure.message)
+        app_ctx.console.print(failures)
+
+    headline = "Dry run finished" if report.dry_run else "Sync finished"
+    parts = [f"{report.changed} change(s)"]
+    if report.conflicts:
+        parts.append(f"{len(report.conflicts)} conflict(s)")
+    if report.failed:
+        parts.append(f"{report.failed} failed")
+    app_ctx.notify.finished(headline, ", ".join(parts))

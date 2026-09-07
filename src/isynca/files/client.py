@@ -22,7 +22,7 @@ listing endpoint, so walking a large Drive costs one round trip per folder.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import IO, Any, cast
@@ -151,7 +151,11 @@ class DriveClient:
         )
 
     def walk(
-        self, *, include_app_libraries: bool = False, depth: int = 0
+        self,
+        *,
+        include_app_libraries: bool = False,
+        depth: int = 0,
+        skip: Callable[[PurePosixPath], bool] | None = None,
     ) -> Iterator[RemoteNode]:
         """Yield every node under the Drive root, parents before children.
 
@@ -162,9 +166,13 @@ class DriveClient:
         the walk rather than filtering its output, which matters because each
         level costs one network round trip per folder: listing the top of a
         Drive should not pay for the whole of it.
+
+        ``skip`` does the same for exclusions: an excluded folder is not
+        listed at all, so ignoring the daemon's scratch directories costs
+        nothing rather than a request each.
         """
         yield from self._walk(
-            CLOUD_DOCS_ZONE_ID_ROOT, PurePosixPath(), include_app_libraries, depth
+            CLOUD_DOCS_ZONE_ID_ROOT, PurePosixPath(), include_app_libraries, depth, skip
         )
 
     def _walk(
@@ -173,6 +181,7 @@ class DriveClient:
         prefix: PurePosixPath,
         include_app_libraries: bool,
         remaining: int,
+        skip: Callable[[PurePosixPath], bool] | None = None,
     ) -> Iterator[RemoteNode]:
         """Yield the subtree rooted at ``drivewsid``, depth first."""
         for item in self._items(drivewsid):
@@ -182,6 +191,9 @@ class DriveClient:
                     "Skipping %s: %s is an app library", node.path, node.raw_type
                 )
                 continue
+            if skip is not None and skip(node.path):
+                LOGGER.debug("Skipping %s: excluded", node.path)
+                continue
             yield node
             if node.is_dir and remaining != 1:
                 yield from self._walk(
@@ -189,6 +201,7 @@ class DriveClient:
                     node.path,
                     include_app_libraries,
                     max(remaining - 1, 0),
+                    skip,
                 )
 
     def children(self, folder: RemoteNode) -> list[RemoteNode]:
@@ -314,19 +327,27 @@ class DriveClient:
             raise DriveError(f"Could not upload {source}: {exc}") from exc
         LOGGER.info("Uploaded %s -> %s", source, parent.path / source.name)
 
-    def mkdir(self, parent: RemoteNode, name: str) -> None:
-        """Create a folder called ``name`` under ``parent``.
+    def mkdir(self, parent: RemoteNode, name: str) -> RemoteNode:
+        """Create a folder called ``name`` under ``parent`` and return it.
+
+        Apple describes the new folder in the reply using exactly the shape a
+        listing uses, so the node comes back without a second round trip --
+        which matters, because creating a nested tree needs each folder's id
+        before its children can be made.
 
         Raises:
-            DriveError: The folder could not be created.
+            DriveError: The folder could not be created, or was created
+                without Apple saying where.
         """
         try:
-            self._drive.create_folders(parent.drivewsid, name)
-        except _TRANSPORT_ERRORS as exc:
+            reply = self._drive.create_folders(parent.drivewsid, name)
+            created = next(iter(reply["folders"]))
+        except (*_TRANSPORT_ERRORS, StopIteration, TypeError) as exc:
             raise DriveError(
                 f"Could not create folder {parent.path / name}: {exc}"
             ) from exc
         LOGGER.info("Created remote folder %s", parent.path / name)
+        return self._to_node(created, parent.path)
 
     def trash(self, node: RemoteNode) -> None:
         """Move one node into Recently Deleted.

@@ -62,6 +62,15 @@ class FakeNode:
         """Return whether the node holds children."""
         return self.node_type != FILE
 
+    @property
+    def filename(self) -> str:
+        """Return the name a client sees, with the extension reattached.
+
+        Apple stores the stem and the extension in separate fields, so the
+        node's own ``name`` is only half of what a caller would recognise.
+        """
+        return f"{self.name}.{self.extension}" if self.extension else self.name
+
     def record(self) -> dict[str, Any]:
         """Return the node as Apple would describe it in a folder listing."""
         data: dict[str, Any] = {
@@ -93,6 +102,10 @@ class FakeDriveService:
     errors: dict[str, Exception] = field(default_factory=dict)
     unlistable: set[str] = field(default_factory=set)
     missing_items: set[str] = field(default_factory=set)
+    silent_upload: bool = False
+    """Accept uploads without ever listing the result, as a failure to model."""
+
+    counter: int = 0
 
     def _raise_if_scripted(self, call: str) -> None:
         """Raise the exception a test scripted for ``call``, if any."""
@@ -148,23 +161,73 @@ class FakeDriveService:
         zone: str = CLOUD_DOCS_ZONE,
         **kwargs: Any,
     ) -> None:
-        """Record an upload, keeping the name the caller's handle reported.
+        """Store an upload the way iCloud actually does.
 
-        The name is what these tests are really about: pyicloud reads it off
-        the file object, so a wrapper that reports the wrong one would put a
-        path-shaped filename in iCloud.
+        Two behaviours are modelled from a live account rather than guessed
+        at. The name comes off the file object -- pyicloud offers no other
+        way to set it, so a wrapper reporting the wrong one would put a
+        path-shaped filename in iCloud. And an upload onto a name that is
+        still taken does *not* replace or version the document: it creates
+        ``notes 2.md`` alongside the original, which is the whole reason a
+        remote update has to trash before it uploads.
         """
         self._raise_if_scripted("send_file")
-        self.uploaded.append((folder_id, file_object.name, file_object.read(), kwargs))
+        content = file_object.read()
+        self.uploaded.append((folder_id, file_object.name, content, kwargs))
+        if self.silent_upload:
+            return
+
+        parent = self._by_docwsid(folder_id)
+        if parent is None:
+            raise KeyError(folder_id)
+        self.counter += 1
+        node = document(
+            self._free_name(parent, file_object.name),
+            content,
+            etag=f"server-{self.counter}",
+        )
+        node.docwsid = f"uploaded-{self.counter}"
+        parent.children.append(node)
+
+    def _by_docwsid(self, docwsid: str) -> FakeNode | None:
+        """Return the node with ``docwsid``; folders are addressed this way."""
+        for node in self._walk(self.root_node):
+            if node.docwsid == docwsid:
+                return node
+        return None
+
+    @staticmethod
+    def _free_name(parent: FakeNode, name: str) -> str:
+        """Return ``name``, or Apple's "name 2.ext" when it is already taken."""
+        taken = {child.filename for child in parent.children}
+        if name not in taken:
+            return name
+        stem, dot, extension = name.rpartition(".")
+        stem = stem or name
+        suffix = f"{dot}{extension}" if dot else ""
+        index = 2
+        while f"{stem} {index}{suffix}" in taken:
+            index += 1
+        return f"{stem} {index}{suffix}"
 
     def create_folders(self, parent: str, name: str) -> Any:
-        """Record a folder creation."""
+        """Create a folder and describe it the way Apple's reply does.
+
+        The reply shape is copied from a real ``createFolders`` response: it
+        carries the whole node record, which is what lets a nested tree be
+        built without re-listing after every level.
+        """
         self._raise_if_scripted("create_folders")
         self.created.append((parent, name))
         node = self.find(parent)
-        if node is not None:
-            node.children.append(FakeNode(f"doc-{name}", name, node_type=FOLDER))
-        return {"status": "OK"}
+        if node is None:
+            raise KeyError(parent)
+        created = FakeNode(f"doc-{name}", name, node_type=FOLDER)
+        node.children.append(created)
+        return {
+            "destinationDrivewsId": parent,
+            "folders": [{**created.record(), "status": "OK"}],
+        }
 
     def move_items_to_trash(self, node_id: str, etag: str) -> Any:
         """Record a trashing."""

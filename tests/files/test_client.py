@@ -230,3 +230,12 @@ def test_walk_depth_stops_descending_rather_than_filtering(drive, client):
 def test_walk_depth_two_reaches_grandchildren(client):
     listed = [str(node.path) for node in client.walk(depth=2)]
     assert listed == ["top.txt", "Notes", "Notes/todo.md", "Notes/Sub"]
+
+
+def test_walk_skips_excluded_subtrees_without_listing_them(drive, client):
+    """An excluded folder must cost no round trip, not merely be filtered out."""
+    drive.unlistable.add("FOLDER::com.apple.CloudDocs::doc-Notes")
+
+    listed = [str(n.path) for n in client.walk(skip=lambda p: p.name == "Notes")]
+
+    assert listed == ["top.txt"]
