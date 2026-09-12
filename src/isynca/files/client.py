@@ -39,6 +39,7 @@ from isynca.errors import (
 from isynca.files.types import FILE_TYPE, NodeKind, RemoteNode
 from isynca.icloud.protocols import DriveServiceLike, ICloudSessionLike
 from isynca.logging import get_logger
+from isynca.net import is_transport_error
 
 LOGGER = get_logger("drive")
 
@@ -57,6 +58,16 @@ _TRANSPORT_ERRORS = (PyiCloudException, RequestException, KeyError, ValueError)
 when a download response carries neither a data nor a package token, and
 ``ValueError`` because a malformed JSON body surfaces that way.
 """
+
+
+def _drive_error(message: str, exc: BaseException) -> DriveError:
+    """Return the per-file error for ``exc``, flagging a lost connection.
+
+    A failure that never reached iCloud is worth waiting out rather than
+    spending a file's few attempts on, so the runner is told which kind this
+    was. See :func:`isynca.net.is_transport_error`.
+    """
+    return DriveError(f"{message}: {exc}", transport=is_transport_error(exc))
 
 
 class NamedReader:
@@ -267,8 +278,8 @@ class DriveClient:
             partial.replace(destination)
         except (OSError, *_TRANSPORT_ERRORS) as exc:
             partial.unlink(missing_ok=True)
-            raise DriveError(
-                f"Could not download {node.path} to {destination}: {exc}"
+            raise _drive_error(
+                f"Could not download {node.path} to {destination}", exc
             ) from exc
 
         self._stamp(destination, node.modified)
@@ -324,7 +335,7 @@ class DriveClient:
                     ctime=stat.st_mtime,
                 )
         except (OSError, *_TRANSPORT_ERRORS) as exc:
-            raise DriveError(f"Could not upload {source}: {exc}") from exc
+            raise _drive_error(f"Could not upload {source}", exc) from exc
         LOGGER.info("Uploaded %s -> %s", source, parent.path / source.name)
 
     def mkdir(self, parent: RemoteNode, name: str) -> RemoteNode:
@@ -343,8 +354,8 @@ class DriveClient:
             reply = self._drive.create_folders(parent.drivewsid, name)
             created = next(iter(reply["folders"]))
         except (*_TRANSPORT_ERRORS, StopIteration, TypeError) as exc:
-            raise DriveError(
-                f"Could not create folder {parent.path / name}: {exc}"
+            raise _drive_error(
+                f"Could not create folder {parent.path / name}", exc
             ) from exc
         LOGGER.info("Created remote folder %s", parent.path / name)
         return self._to_node(created, parent.path)
@@ -361,5 +372,5 @@ class DriveClient:
         try:
             self._drive.move_items_to_trash(node.drivewsid, node.etag)
         except _TRANSPORT_ERRORS as exc:
-            raise DriveError(f"Could not delete {node.path}: {exc}") from exc
+            raise _drive_error(f"Could not delete {node.path}", exc) from exc
         LOGGER.info("Trashed %s", node.path)

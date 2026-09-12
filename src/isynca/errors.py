@@ -44,11 +44,20 @@ class ItemError(IsyncaError):
     A raiser that knows the failure is settled, such as iCloud refusing a
     file's format outright, passes ``retryable=False`` so the run stops
     spending attempts on an answer that will not change.
+
+    ``transport=True`` marks the other extreme: the connection failed, so
+    iCloud never gave an answer about this file at all. Nothing is wrong with
+    it, and :mod:`isynca.retry` waits far longer for those -- an outage is
+    measured in minutes, and a handful of one-second retries would fail every
+    remaining file for the sake of a router coming back up.
     """
 
-    def __init__(self, message: str, *, retryable: bool = True) -> None:
+    def __init__(
+        self, message: str, *, retryable: bool = True, transport: bool = False
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.transport = transport
 
 
 class UploadError(ItemError):

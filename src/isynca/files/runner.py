@@ -34,7 +34,7 @@ from isynca.files.state import EntryKind, SyncRecord, SyncState
 from isynca.files.types import RemoteNode
 from isynca.ledger.hashing import hash_file
 from isynca.logging import get_logger
-from isynca.sync.runner import RetryPolicy
+from isynca.retry import RetryPolicy, with_retries
 
 LOGGER = get_logger("files-runner")
 
@@ -154,7 +154,7 @@ class SyncRunner:
 
         try:
             self._with_retries(action)
-        except (ItemError, OSError) as exc:
+        except ItemError as exc:
             LOGGER.error("Could not %s %s: %s", action.kind, action.path, exc)
             report.record_failure(action.path, str(exc))
             self._notify(action)
@@ -168,27 +168,15 @@ class SyncRunner:
 
         A non-retryable :class:`~isynca.errors.ItemError` is re-raised at
         once: it concerns this path alone, but iCloud has already given its
-        final answer about it.
+        final answer about it. A connection that dropped is the opposite
+        case, and is waited out on the far longer offline budget.
         """
-        for attempt in range(1, self._retry.attempts + 1):
-            try:
-                self._dispatch(action)
-            except ItemError as exc:
-                if attempt == self._retry.attempts or not exc.retryable:
-                    raise
-                delay = self._retry.delay_for(attempt)
-                LOGGER.warning(
-                    "Attempt %d/%d for %s failed (%s); retrying in %.1fs",
-                    attempt,
-                    self._retry.attempts,
-                    action.path,
-                    exc,
-                    delay,
-                )
-                self._sleep(delay)
-            else:
-                return
-        raise AssertionError("unreachable")  # pragma: no cover
+        with_retries(
+            lambda: self._dispatch(action),
+            policy=self._retry,
+            label=action.path,
+            sleep=self._sleep,
+        )
 
     def _dispatch(self, action: SyncAction) -> None:
         """Perform one action for real."""

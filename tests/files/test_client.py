@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
@@ -141,6 +142,30 @@ def test_upload_failure_is_an_item_error(drive, client, tmp_path):
     source.write_bytes(b"a")
     with pytest.raises(DriveError, match="Could not upload"):
         client.upload(client.root(), source)
+
+
+def test_a_dropped_connection_during_upload_is_flagged_as_transport(
+    drive, client, tmp_path
+):
+    """The runner waits for a network that went, rather than failing the file."""
+    drive.errors["send_file"] = OSError(errno.EHOSTUNREACH, "No route to host")
+    source = tmp_path / "a.txt"
+    source.write_bytes(b"a")
+    with pytest.raises(DriveError) as raised:
+        client.upload(client.root(), source)
+
+    assert raised.value.transport
+
+
+def test_a_rejected_upload_is_not_flagged_as_transport(drive, client, tmp_path):
+    """ICloud answered, so waiting for the network would be waiting for nothing."""
+    drive.errors["send_file"] = PyiCloudAPIResponseException("nope", 503)
+    source = tmp_path / "a.txt"
+    source.write_bytes(b"a")
+    with pytest.raises(DriveError) as raised:
+        client.upload(client.root(), source)
+
+    assert not raised.value.transport
 
 
 def test_upload_of_a_missing_file_is_an_item_error(client, tmp_path):

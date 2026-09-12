@@ -21,7 +21,7 @@ from isynca.files.runner import (
     remote_index,
 )
 from isynca.files.state import SyncState
-from isynca.sync.runner import RetryPolicy
+from isynca.retry import RetryPolicy
 from tests.fakes.drive import build_drive, document, folder
 from tests.fakes.icloud import FakeSession
 

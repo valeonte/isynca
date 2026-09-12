@@ -39,6 +39,7 @@ from isynca.icloud.protocols import (
 )
 from isynca.ledger.store import UploadStatus
 from isynca.logging import get_logger
+from isynca.net import TRANSPORT_ERRORS, is_transport_error
 
 LOGGER = get_logger("photos")
 
@@ -113,12 +114,21 @@ class PhotosUploader:
         matches, so the create-if-missing step happens here. Resolution is
         deferred to the first upload and cached: a dry run never touches the
         network, and a real run pays for it once rather than per file.
+
+        Only a resolved album is cached. A lookup that failed because the
+        network did says nothing about the album, and remembering it would
+        upload every remaining file outside the album the user asked for.
+
+        Raises:
+            AlbumNotFoundError: iCloud has no such album and would not make
+                one.
+            UploadError: The connection failed before iCloud answered.
         """
         if self._album_resolved:
             return self._album_name
-        self._album_resolved = True
 
         if self._album_name is None:
+            self._album_resolved = True
             return None
 
         try:
@@ -126,6 +136,10 @@ class PhotosUploader:
             if album is None:
                 LOGGER.info("Creating album %r", self._album_name)
                 album = self.service.create_album(self._album_name)
+        except TRANSPORT_ERRORS as exc:
+            raise _transport_error(
+                f"resolving album {self._album_name!r}", exc
+            ) from exc
         except PyiCloudException as exc:
             raise AlbumNotFoundError(
                 f"Could not resolve album {self._album_name!r}: {exc}"
@@ -139,6 +153,7 @@ class PhotosUploader:
         # an album from find() is typed as the abstract base; the cast records
         # that the call is real even though the declared type cannot show it.
         self._album = cast(AlbumFilingLike, album)
+        self._album_resolved = True
         return self._album_name
 
     def upload(self, path: Path) -> UploadOutcome:
@@ -164,8 +179,8 @@ class PhotosUploader:
             ) from exc
         except PyiCloudException as exc:
             raise UploadError(f"Upload of {path} failed: {exc}") from exc
-        except OSError as exc:
-            raise UploadError(f"Could not read {path}: {exc}") from exc
+        except TRANSPORT_ERRORS as exc:
+            raise _lost_connection_or_bad_file(path, exc) from exc
 
         return self._classify(result, path)
 
@@ -198,6 +213,10 @@ class PhotosUploader:
             return
         try:
             self._album.add_photo(asset)
+        except TRANSPORT_ERRORS as exc:
+            raise _transport_error(
+                f"filing {path} into {self._album_name!r}", exc
+            ) from exc
         except (CloudKitApiError, PyiCloudException) as exc:
             raise UploadError(
                 f"{path} reached iCloud but could not be added to "
@@ -216,8 +235,8 @@ class PhotosUploader:
             raise UploadError(f"Upload of {path} failed: {exc}") from exc
         except PyiCloudException as exc:
             raise UploadError(f"Upload of {path} failed: {exc}") from exc
-        except OSError as exc:
-            raise UploadError(f"Could not read {path}: {exc}") from exc
+        except TRANSPORT_ERRORS as exc:
+            raise _lost_connection_or_bad_file(path, exc) from exc
 
         if asset is None:
             LOGGER.debug("%s uploaded but was not indexed in time", path.name)
@@ -228,6 +247,26 @@ class PhotosUploader:
             master_id=asset.master_id,
             asset_id=asset.id,
         )
+
+
+def _transport_error(doing: str, exc: BaseException) -> UploadError:
+    """Return the error for a connection that failed while ``doing`` something."""
+    return UploadError(
+        f"Lost the connection to iCloud while {doing}: {exc}", transport=True
+    )
+
+
+def _lost_connection_or_bad_file(path: Path, exc: BaseException) -> UploadError:
+    """Return the error for a transfer that failed at the socket or at the disk.
+
+    pyicloud opens the file itself, so one call can fail either way and both
+    arrive as an :class:`OSError`. The difference matters to the run: a
+    vanished network is waited out, while a file that will not read is this
+    file's own problem.
+    """
+    if is_transport_error(exc):
+        return _transport_error(f"uploading {path}", exc)
+    return UploadError(f"Could not read {path}: {exc}")
 
 
 def _direct_client(service: PhotosServiceLike) -> DirectUploadLike | None:

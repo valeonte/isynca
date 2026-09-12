@@ -300,6 +300,20 @@ created asset. `duplicate` means iCloud reported it already held that content.
 indexing before the hydration timeout — that is a success, not a failure, and it
 still suppresses a retry.
 
+### Retries
+
+A failure iCloud reported about one file — a rate limit, a 5xx, a transfer that
+broke mid-stream — is retried a few times with an exponential backoff, and then
+recorded as failed so the run moves on.
+
+A failure of the connection itself is treated differently. Nothing is wrong with
+the file: the machine has simply lost the network, and a handful of one-second
+retries would mark every remaining file failed for the sake of a router coming
+back up. Those get their own budget — fifteen attempts with the delay capped at a
+minute, so a run sits out roughly ten minutes of outage per file and then carries
+on. Nothing is lost either way: a file that does end up failed has no ledger row,
+so the next run simply sends it again.
+
 ## Configuration
 
 Settings resolve lowest-to-highest from: built-in defaults, `config.toml`,
