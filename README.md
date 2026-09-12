@@ -4,8 +4,9 @@
 
 A modular toolkit for iCloud operations, built on [pyicloud](https://github.com/timlaing/pyicloud).
 
-The first capability is bulk upload of photos and video from a local folder tree
-into iCloud Photos, with a local ledger so re-runs skip what is already there.
+Two capabilities so far: bulk upload of photos and video from a local folder
+tree into iCloud Photos, with a local ledger so re-runs skip what is already
+there; and a two-way sync between a local folder and your iCloud Drive.
 
 ## Quick start
 
@@ -26,6 +27,9 @@ pixi run isynca photos upload ~/Media
 | `isynca photos scan SRC...` | Inventory matching media without touching the network |
 | `isynca photos upload SRC...` | Upload discovered media to iCloud Photos |
 | `isynca photos archive SRC... --to DEST` | Upload, then move what iCloud holds into DEST |
+| `isynca files sync DIR` | Two-way sync between DIR and your iCloud Drive |
+| `isynca files list` | List what iCloud Drive holds, changing nothing |
+| `isynca files put FILE` | Upload one file into iCloud Drive |
 | `isynca ledger stats` | Summarise what the ledger has recorded |
 | `isynca ledger list` | List recorded uploads |
 | `isynca ledger forget PATH` | Drop one file's record so it uploads again |
@@ -144,6 +148,138 @@ untidy, not a failure, and the run still exits 0.
 `upload` never prunes: it empties nothing, so a folder that was already empty
 is none of its business.
 
+## Syncing files with iCloud Drive
+
+`isynca files sync` mirrors a local folder against your iCloud Drive, both
+ways. New files move in whichever direction they appeared, edits follow
+whichever side made them, and a file deleted on one side is deleted on the
+other.
+
+```bash
+isynca files sync ~/iCloudDrive --dry-run   # see the whole plan first
+isynca files sync ~/iCloudDrive
+```
+
+The folder you name stands for the root of iCloud Drive — the folder Finder
+calls "iCloud Drive". Per-app document libraries (Pages, Numbers, Shortcuts)
+live in a different zone and are never touched.
+
+### How it decides
+
+Two directory listings cannot describe a two-way sync. "Here but not there"
+is either a file you just made or a file someone else just deleted, and
+nothing in the two listings says which. The difference is the *previous*
+state, so `isynca` writes it down in `~/.local/share/isynca/drive.db` and
+reconciles three pictures rather than two:
+
+| Last sync | Local | iCloud | What happens |
+| --- | --- | --- | --- |
+| — | yes | — | upload |
+| — | — | yes | download |
+| — | yes | yes | adopted if the sizes match, otherwise a conflict |
+| yes | changed | unchanged | update iCloud |
+| yes | unchanged | changed | update local |
+| yes | changed | changed | **conflict** |
+| yes | gone | unchanged | delete from iCloud |
+| yes | unchanged | gone | delete locally |
+| yes | changed | gone | **conflict** |
+| yes | gone | changed | **conflict** |
+
+A conflict is reported and both copies are left exactly as they are. Nothing
+is merged, renamed, or overwritten, and the run exits non-zero so it does not
+scroll past unnoticed. Everything else in the run still syncs.
+
+"Changed locally" is decided on stat data first and confirmed by hashing, so
+a file that was touched but not edited — which plenty of tools do — costs one
+`stat` rather than one upload.
+
+### Deletions, and not doing too many of them
+
+Deletions go to iCloud's Recently Deleted, where they stay recoverable for
+thirty days. `isynca` never deletes permanently.
+
+A run that would remove more than 50 items stops before touching anything and
+asks you to confirm:
+
+```
+Error: This run would delete 412 item(s), over the limit of 50 (for example:
+Notes/todo.md, ...). Check the folder is the one you meant, then re-run with
+--force to proceed.
+```
+
+That rail exists because a sync pointed at the wrong folder looks exactly
+like a sync of a folder you emptied on purpose. `--max-deletes N` moves the
+line, `--max-deletes 0` removes it, and `--force` gets past it for one run.
+
+Local folders are removed with `rmdir`, never recursively: a folder still
+holding something — a file you excluded, say — is left standing rather than
+swept away with its contents.
+
+### One direction at a time
+
+```bash
+isynca files sync ~/iCloudDrive --push-only   # apply local changes; ignore iCloud's
+isynca files sync ~/iCloudDrive --pull-only   # apply iCloud's changes; ignore local
+```
+
+`--push-only` still deletes from iCloud what you deleted locally — it means
+"local is authoritative", not "never delete". Files that exist only on the
+ignored side are counted and reported, not acted on.
+
+### What is skipped
+
+Symlinks are never synced in either direction. A symlink has no content of
+its own to upload and iCloud has nothing to store one as.
+
+These are excluded by default, on both sides:
+
+```
+.com-apple-*   .DS_Store   .Trash*   .fseventsd   .Spotlight-V100   *.isynca-part
+```
+
+`.com-apple-*` earns its place from a real account: `bird`, the iCloud Drive
+daemon, leaves empty `.com-apple-bird-noname-<UUID>` scratch folders behind —
+ten of them on the account this was built against. `--exclude` adds your own
+globs, and they bind in both directions, so what you skip on the way up is
+not quietly recreated on the way back down.
+
+### The first run
+
+The first run against a folder has nothing recorded to compare with, so it
+never deletes anything: there is no earlier agreement for a deletion to be a
+departure from. Files that already exist on both sides and match by size are
+adopted — recorded as already in sync rather than transferred. Files that
+exist on both sides with *different* sizes are reported as conflicts, not
+guessed at.
+
+Sizes are used because iCloud exposes no content hash for a drive file, and
+downloading everything to compare would cost as much as syncing from scratch.
+
+### Two things worth knowing about iCloud
+
+**There is no overwrite.** Uploading onto a name that already exists creates
+`notes 2.md` rather than a new version of `notes.md` — Apple resolves the
+clash by renaming. Updating a remote file therefore means trashing it and
+uploading a replacement. The old copy stays in Recently Deleted, so a failure
+between the two steps costs a trip to the trash rather than the file.
+
+**Listing is one request per folder.** There is no recursive listing
+endpoint, so the walk is the slow part of a run, and it is why excluded
+folders are skipped rather than filtered — an ignored folder costs nothing
+instead of a round trip.
+
+### Inspecting without syncing
+
+```bash
+isynca files list                 # the root of your Drive
+isynca files list --depth 0       # the whole tree
+isynca files put notes.md --to Notes
+```
+
+`files list` shows the raw node type alongside each entry, which is how the
+app-library and scratch-folder behaviour above was established in the first
+place.
+
 ## How re-runs stay cheap
 
 Uploading re-reads and re-sends every byte, which is expensive for video, so
@@ -164,6 +300,20 @@ created asset. `duplicate` means iCloud reported it already held that content.
 indexing before the hydration timeout — that is a success, not a failure, and it
 still suppresses a retry.
 
+### Retries
+
+A failure iCloud reported about one file — a rate limit, a 5xx, a transfer that
+broke mid-stream — is retried a few times with an exponential backoff, and then
+recorded as failed so the run moves on.
+
+A failure of the connection itself is treated differently. Nothing is wrong with
+the file: the machine has simply lost the network, and a handful of one-second
+retries would mark every remaining file failed for the sake of a router coming
+back up. Those get their own budget — fifteen attempts with the delay capped at a
+minute, so a run sits out roughly ten minutes of outage per file and then carries
+on. Nothing is lost either way: a file that does end up failed has no ledger row,
+so the next run simply sends it again.
+
 ## Configuration
 
 Settings resolve lowest-to-highest from: built-in defaults, `config.toml`,
@@ -179,61 +329,50 @@ videos = true
 min_size = 1024
 exclude = ["*/.Trash/*", "*.partial"]
 prune_empty_dirs = true
-notify = true
-notify_level = "WARNING"
+max_deletes = 50
+log_file = "~/isynca/full.log"
+warn_log = "~/isynca/problems.log"
 ```
 
-State lives under the XDG directories: the ledger and session cookies in
-`~/.local/share/isynca/`, configuration in `~/.config/isynca/`.
+State lives under the XDG directories: the ledger, the drive sync state and
+session cookies in `~/.local/share/isynca/`, configuration in
+`~/.config/isynca/`.
 
-## Desktop notifications
+The two databases are kept apart on purpose. `ledger.db` is keyed by content
+hash for a one-way flow; `drive.db` is keyed by path for a two-way one, and a
+single file pretending to be both would serve neither.
 
-A run that logged anything worth seeing tells the desktop about it when it
-ends:
+## Log files
 
-```
-isynca: 1 error, 12 warnings
-upload refused: HEIC variant not accepted
-… and 12 more
-```
-
-Nothing is sent while the run is in progress. Warnings here are per-file --
-one unreadable folder, one photo with no capture date -- and a large scan logs
-hundreds of them, so they are counted and summarised into a single
-notification rather than popped one at a time. A run that takes more than
-twenty seconds also reports finishing, folded into the same notification:
-
-```
-isynca: Upload finished
-412 uploaded, 3 skipped · 12 warnings
-```
-
-Short runs stay silent unless something went wrong. An error that aborts a run
-is always notified, however briefly the run lasted.
-
-This turns itself on when there is a desktop to talk to and stays out of the
-way when there is not. The signal is a session bus address in the
-environment, so cron jobs, ssh sessions, and CI are silent without needing to
-be told. Delivery is the freedesktop `org.freedesktop.Notifications`
-interface, which KDE Plasma, GNOME, Cinnamon, and XFCE all implement, over
-[jeepney](https://pypi.org/project/jeepney/) -- no notification daemon of
-isynca's own, and no `notify-send` subprocess. A desktop that will not take
-the message is never a reason to fail a run that has otherwise finished.
-
-To switch it off, any of:
+Everything a run logs goes to the terminal. Two options also write it to a
+file, for the runs you walk away from:
 
 ```bash
-isynca --no-notify photos upload ~/Media   # this run
-export ISYNCA_NOTIFY=0                     # this shell
+isynca --log-file ~/isynca/full.log photos upload ~/Media       # everything
+isynca --warn-log ~/isynca/problems.log photos upload ~/Media   # warnings and errors
 ```
 
-```toml
-[isynca]
-notify = false                             # always
+`--log-file` records the full log, debug lines included, whether or not
+`--verbose` is on -- the terminal stays as quiet as it was. `--warn-log`
+records only warnings and above, which for a large scan is the short list
+worth reading: the unreadable folders, the photos with no capture date, the
+uploads iCloud refused. Either, both, or neither can be given, and one run
+can write both files.
+
+Both files are appended to, run after run, and every line carries a
+timestamp, level, and logger name so that runs can be told apart:
+
+```
+2026-09-12 08:41:07,213 WARNING  isynca.media.scanner: cannot read /media/trip/day3: Permission denied
+2026-09-12 08:53:22,980 ERROR    isynca.sync.runner: upload refused: HEIC variant not accepted
 ```
 
-`notify_level` raises the bar instead of removing it: `"ERROR"` reports only
-failures, leaving per-file warnings to the terminal.
+A missing parent directory is created; a path that cannot be opened at all is
+reported before the command starts, not discovered at its end.
+
+Like every other setting, both paths can live in `config.toml` (`log_file`,
+`warn_log`) or the environment (`ISYNCA_LOG_FILE`, `ISYNCA_WARN_LOG`), so a
+scheduled run can log without the flag being repeated in the crontab.
 
 ## Development
 

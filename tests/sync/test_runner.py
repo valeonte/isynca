@@ -1,3 +1,5 @@
+import errno
+
 import pytest
 from pyicloud.exceptions import PyiCloudAPIResponseException
 
@@ -5,9 +7,10 @@ from isynca.errors import AlbumNotFoundError
 from isynca.icloud.photos import PhotosUploader
 from isynca.ledger.hashing import hash_file
 from isynca.ledger.store import UploadStatus
+from isynca.retry import RetryPolicy
 from isynca.sync.archiver import Archiver
 from isynca.sync.planner import PlannedUpload, SkippedUpload, SkipReason, UploadPlan
-from isynca.sync.runner import RetryPolicy, UploadRunner
+from isynca.sync.runner import UploadRunner
 from tests.fakes.icloud import FakeRegistration, cloudkit_error
 
 
@@ -176,6 +179,39 @@ def test_fatal_errors_are_not_retried(session, ledger, make_media):
     with pytest.raises(AlbumNotFoundError):
         runner.run(plan_with(make_media()))
     assert session.photos_service.uploaded == []
+
+
+def test_a_network_blip_is_waited_out_rather_than_failing_the_file(
+    session, ledger, make_media
+):
+    """A socket error escaping the HTTP stack must not fail a good file.
+
+    Six blips is past the ordinary three-attempt budget on purpose: a file
+    nothing is wrong with should ride out an outage, not spend its attempts
+    on it.
+    """
+    session.photos_service.upload_results = [
+        OSError(errno.EHOSTUNREACH, "No route to host") for _ in range(6)
+    ]
+    delays = []
+    report = build(session, ledger, sleep=delays.append).run(plan_with(make_media()))
+
+    assert report.confirmed == 1
+    assert report.failed == 0
+    assert len(delays) == 6
+
+
+def test_a_lasting_outage_still_ends_as_a_recorded_failure(session, ledger, make_media):
+    """Waiting is bounded: an unplugged machine must still finish and report."""
+    policy = RetryPolicy(attempts=1, offline_attempts=2)
+    session.photos_service.upload_results = [
+        OSError(errno.ENETUNREACH, "Network is unreachable") for _ in range(2)
+    ]
+    media = make_media()
+    report = build(session, ledger, retry=policy).run(plan_with(media))
+
+    assert report.failed == 1
+    assert "Network is unreachable" in report.failures[0].message
 
 
 def test_retry_policy_backs_off_exponentially():

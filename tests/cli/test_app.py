@@ -1,5 +1,3 @@
-import logging
-
 import click
 import pytest
 import typer
@@ -12,7 +10,6 @@ from isynca.cli.app import app, main
 from isynca.cli.context import AppContext, get_context
 from isynca.config import Config
 from isynca.errors import ConfigError
-from isynca.notify import NotificationCollector, NotifySession
 
 
 def test_version_flag(runner):
@@ -135,80 +132,29 @@ def test_module_entry_point_is_importable():
     assert entry.main is main
 
 
-def _collecting():
-    """Return whether the isynca logger is feeding a notification collector."""
-    return any(
-        isinstance(handler, NotificationCollector)
-        for handler in logging.getLogger("isynca").handlers
-    )
+def test_log_file_option_writes_the_full_log(invoke, tmp_path):
+    log_file = tmp_path / "full.log"
+    assert invoke("--log-file", str(log_file), "ledger", "stats").exit_code == 0
+    assert log_file.is_file()
 
 
-@pytest.fixture
-def desktop(monkeypatch):
-    """Pretend a notification daemon is listening."""
-    notifier = _CollectingNotifier()
-    monkeypatch.setattr("isynca.notify.session.detect", lambda environ=None: notifier)
-    return notifier
+def test_warn_log_option_writes_only_problems(invoke, tmp_path):
+    """A clean run leaves the warnings file empty rather than missing."""
+    warn_log = tmp_path / "warn.log"
+    assert invoke("--warn-log", str(warn_log), "ledger", "stats").exit_code == 0
+    assert warn_log.read_text() == ""
 
 
-def test_a_desktop_run_collects_warnings_without_being_asked(invoke, desktop):
-    """Every existing LOGGER.warning is covered by the handler, not by edits."""
+def test_log_paths_in_the_environment_are_honoured(invoke, tmp_path, monkeypatch):
+    log_file = tmp_path / "full.log"
+    monkeypatch.setenv("ISYNCA_LOG_FILE", str(log_file))
     assert invoke("ledger", "stats").exit_code == 0
-    assert _collecting()
+    assert log_file.is_file()
 
 
-def test_no_notify_switches_the_collector_off(invoke, desktop):
-    assert invoke("--no-notify", "ledger", "stats").exit_code == 0
-    assert not _collecting()
-
-
-def test_notify_off_in_the_environment_is_honoured(invoke, desktop, monkeypatch):
-    monkeypatch.setenv("ISYNCA_NOTIFY", "false")
-    assert invoke("ledger", "stats").exit_code == 0
-    assert not _collecting()
-
-
-def test_nothing_collects_without_a_desktop_session(invoke):
-    """No session bus -- cron, ssh, CI -- and the whole feature stays out."""
-    assert invoke("ledger", "stats").exit_code == 0
-    assert not _collecting()
-
-
-def test_main_closes_the_session_after_a_fatal_error(monkeypatch):
-    """The error that aborted a run is exactly what you want notified."""
-    notifier = _CollectingNotifier()
-    monkeypatch.setattr(
-        "isynca.cli.app.NotifySession",
-        lambda: _armed_session(notifier),
-    )
-
-    def boom(**kwargs):
-        raise ConfigError("no Apple ID configured")
-
-    monkeypatch.setattr("isynca.cli.app.app", boom)
-    assert main() == 1
-    assert notifier.sent[0].summary == "isynca: run failed"
-    assert "no Apple ID configured" in notifier.sent[0].body
-
-
-def test_main_closes_the_session_on_success(monkeypatch):
-    notifier = _CollectingNotifier()
-    session = _armed_session(notifier)
-    monkeypatch.setattr("isynca.cli.app.NotifySession", lambda: session)
-    monkeypatch.setattr("isynca.cli.app.app", lambda **kwargs: None)
-    assert main() == 0
-    assert notifier.sent == []
-
-
-class _CollectingNotifier:
-    def __init__(self):
-        self.sent = []
-
-    def send(self, notification):
-        self.sent.append(notification)
-
-
-def _armed_session(notifier):
-    session = NotifySession(notifier=notifier)
-    session.arm(Config())
-    return session
+def test_an_unwritable_log_file_is_reported(invoke, tmp_path):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("")
+    result = invoke("--log-file", str(blocker / "x.log"), "ledger", "stats")
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ConfigError)

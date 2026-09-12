@@ -17,8 +17,8 @@ from isynca.errors import ConfigError
 APP_NAME = "isynca"
 ENV_PREFIX = "ISYNCA_"
 
-NOTIFY_LEVELS = ("WARNING", "ERROR", "CRITICAL")
-"""Levels that may be notified about. Anything quieter is normal progress."""
+PATH_FIELDS = ("data_dir", "log_file", "warn_log")
+"""Settings holding a filesystem path, which get ``~`` expanded on load."""
 
 
 def _xdg_dir(env_var: str, default: str) -> Path:
@@ -57,23 +57,13 @@ class Config:
     exclude: tuple[str, ...] = ()
     dry_run: bool = False
     prune_empty_dirs: bool = True
+    max_deletes: int = 50
+    include_app_libraries: bool = False
     verbose: bool = False
-    notify: bool = True
-    notify_level: str = "WARNING"
-
-    def __post_init__(self) -> None:
-        """Normalise and check the notification level.
-
-        Done here rather than at the CLI so that a level coming from the
-        config file or the environment is caught just as early.
-        """
-        level = str(self.notify_level).upper()
-        if level not in NOTIFY_LEVELS:
-            raise ConfigError(
-                f"notify_level must be one of {', '.join(NOTIFY_LEVELS)}, "
-                f"not {self.notify_level!r}"
-            )
-        object.__setattr__(self, "notify_level", level)
+    log_file: Path | None = None
+    """Where to append the full log of each run, or ``None`` for nowhere."""
+    warn_log: Path | None = None
+    """Where to append only the warnings and errors, or ``None`` for nowhere."""
 
     @property
     def ledger_path(self) -> Path:
@@ -84,6 +74,16 @@ class Config:
     def cookie_dir(self) -> Path:
         """Return the directory pyicloud stores session cookies in."""
         return self.data_dir / "cookies"
+
+    @property
+    def sync_state_path(self) -> Path:
+        """Return the path of the iCloud Drive sync state database.
+
+        Kept apart from the photos ledger: that one is keyed by content hash
+        for a one-way flow, this one by path for a two-way one, and a single
+        file pretending to be both would serve neither.
+        """
+        return self.data_dir / "drive.db"
 
     def with_overrides(self, **overrides: Any) -> Config:  # noqa: ANN401
         """Return a copy with every non-``None`` override applied."""
@@ -103,9 +103,9 @@ _FIELD_TYPES: dict[str, type] = {
     "min_size": int,
     "follow_symlinks": bool,
     "prune_empty_dirs": bool,
+    "max_deletes": int,
+    "include_app_libraries": bool,
     "verbose": bool,
-    "notify": bool,
-    "notify_level": str,
 }
 
 
@@ -164,8 +164,9 @@ def load(
     unknown = set(settings) - set(Config.__dataclass_fields__)
     if unknown:
         raise ConfigError(f"Unknown setting(s): {', '.join(sorted(unknown))}")
-    if "data_dir" in settings:
-        settings["data_dir"] = Path(settings["data_dir"]).expanduser()
+    for key in PATH_FIELDS:
+        if key in settings:
+            settings[key] = Path(settings[key]).expanduser()
     if "exclude" in settings:
         settings["exclude"] = tuple(settings["exclude"])
 

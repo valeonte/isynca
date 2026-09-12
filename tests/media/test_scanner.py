@@ -130,3 +130,22 @@ def test_symlinked_directory_followed_when_requested(tmp_path, tree):
     (link_root / "trip").symlink_to(tree / "trip", target_is_directory=True)
     scanner = Scanner(follow_symlinks=True)
     assert names(scanner.scan([link_root])) == ["a.mp4", "b.mov", "photo.jpg"]
+
+
+def test_numbered_files_are_walked_in_natural_order(tmp_path):
+    """``(2 of 231)`` comes before ``(10 of 231)``, not after ``(199 of 231)``."""
+    root = tmp_path / "export"
+    root.mkdir()
+    for n in (1, 10, 100, 2, 20, 3):
+        (root / f"Orbis ({n} of 231).jpg").write_bytes(b"x")
+    walked = [m.path.name for m in Scanner().scan([root])]
+    assert walked == [f"Orbis ({n} of 231).jpg" for n in (1, 2, 3, 10, 20, 100)]
+
+
+def test_numbered_folders_are_walked_in_natural_order(tmp_path):
+    root = tmp_path / "export"
+    for n in (1, 10, 2):
+        (root / f"day {n}").mkdir(parents=True)
+        (root / f"day {n}" / "a.jpg").write_bytes(b"x")
+    walked = [m.path.parent.name for m in Scanner().scan([root])]
+    assert walked == ["day 1", "day 2", "day 10"]

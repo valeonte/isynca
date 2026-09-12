@@ -11,6 +11,7 @@ from rich.console import Console
 
 from isynca import __version__
 from isynca.cli import auth as auth_cli
+from isynca.cli import files as files_cli
 from isynca.cli import ledger as ledger_cli
 from isynca.cli import photos as photos_cli
 from isynca.cli.context import AppContext
@@ -18,7 +19,6 @@ from isynca.config import load
 from isynca.errors import IsyncaError
 from isynca.icloud import session as icloud_session
 from isynca.logging import configure
-from isynca.notify import NotifySession
 
 app = typer.Typer(
     name="isynca",
@@ -29,6 +29,7 @@ app = typer.Typer(
 app.add_typer(auth_cli.app, name="auth")
 app.add_typer(photos_cli.app, name="photos")
 app.add_typer(ledger_cli.app, name="ledger")
+app.add_typer(files_cli.app, name="files")
 
 
 def _version_callback(value: bool) -> None:
@@ -57,12 +58,18 @@ def main_callback(
         bool,
         typer.Option("--verbose", "-v", help="Enable debug logging."),
     ] = False,
-    notify: Annotated[
-        bool | None,
+    log_file: Annotated[
+        Path | None,
         typer.Option(
-            "--notify/--no-notify",
-            help="Send a desktop notification when the run ends.",
-            show_default=False,
+            "--log-file",
+            help="Append the full log of this run, debug lines included, here.",
+        ),
+    ] = None,
+    warn_log: Annotated[
+        Path | None,
+        typer.Option(
+            "--warn-log",
+            help="Append only the warnings and errors of this run here.",
         ),
     ] = None,
     _version: Annotated[
@@ -81,7 +88,8 @@ def main_callback(
         apple_id=apple_id,
         data_dir=data_dir,
         verbose=verbose or None,
-        notify=notify,
+        log_file=log_file,
+        warn_log=warn_log,
     )
     if settings.apple_id is None:
         # Lowest precedence: an explicit --apple-id, ISYNCA_APPLE_ID, or a
@@ -95,20 +103,16 @@ def main_callback(
     # they share a console, and two of them is what smears log lines across
     # the upload bar.
     err_console = Console(stderr=True)
-    # main() seeds the session so that it outlives this callback and can still
-    # report a failure raised before, during, or after the command itself.
-    # Anything invoking the Typer app directly gets an inert one instead.
-    session = ctx.obj if isinstance(ctx.obj, NotifySession) else NotifySession()
     configure(
         verbose=settings.verbose,
         console=err_console,
-        collector=session.arm(settings),
+        log_file=settings.log_file,
+        warn_log=settings.warn_log,
     )
     ctx.obj = AppContext(
         config=settings,
         console=Console(),
         err_console=err_console,
-        notify=session,
     )
 
 
@@ -119,16 +123,10 @@ def main() -> int:
     errors can be rendered as one clean line. The catch is that click then
     *returns* the code for a ``typer.Exit`` instead of raising it, so the
     return value has to be honoured or a failing command would report success.
-
-    The notification session is created here, not in the callback, so that it
-    is closed on every exit path -- including the ones that never reached a
-    command.
     """
-    session = NotifySession()
     try:
-        result = app(standalone_mode=False, obj=session)
+        result = app(standalone_mode=False)
     except IsyncaError as exc:
-        session.record_fatal(str(exc))
         Console(stderr=True).print(f"[red]Error:[/red] {exc}")
         return 1
     except typer.Exit as exc:
@@ -141,5 +139,3 @@ def main() -> int:
         return 130
     else:
         return result if isinstance(result, int) else 0
-    finally:
-        session.close()

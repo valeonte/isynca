@@ -10,7 +10,6 @@ from rich.console import Console
 from isynca.config import Config
 from isynca.errors import ConfigError
 from isynca.ledger.store import Ledger
-from isynca.notify import NotifySession
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,20 +22,11 @@ class AppContext:
     only keep a live progress display from colliding with other output when
     both go through one console object, so this same ``err_console`` is what
     :func:`isynca.logging.configure` is given.
-
-    ``notify`` is the third output stream, and the slowest: one desktop
-    notification summarising the whole run, sent as the process exits.
     """
 
     config: Config
     console: Console
     err_console: Console = field(default_factory=lambda: Console(stderr=True))
-    notify: NotifySession = field(default_factory=NotifySession)
-    """This run's desktop notification, still being written.
-
-    Inert unless the root callback armed it, so a command can hand it
-    whatever it likes without checking whether anyone is listening.
-    """
 
     def open_ledger(self) -> Ledger:
         """Open the ledger for this invocation's data directory."""

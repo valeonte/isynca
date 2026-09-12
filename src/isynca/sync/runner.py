@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 
 from isynca.errors import FatalError, ItemError
 from isynca.icloud.photos import PhotosUploader, UploadOutcome
 from isynca.ledger.store import Ledger, UploadStatus
 from isynca.logging import get_logger
 from isynca.media.types import MediaFile
+from isynca.retry import RetryPolicy, with_retries
 from isynca.sync.archiver import ArchiveOutcome, Archiver, is_archivable
 from isynca.sync.planner import (
     PlannedUpload,
@@ -39,19 +39,6 @@ Separate from :data:`ProgressHook`, which fires once the outcome is known: a
 progress bar that only heard about finished files would name the file it has
 just stopped working on.
 """
-
-
-@dataclass(frozen=True, slots=True)
-class RetryPolicy:
-    """How often, and how patiently, to retry a failed upload."""
-
-    attempts: int = 3
-    initial_delay: float = 1.0
-    backoff: float = 2.0
-
-    def delay_for(self, attempt: int) -> float:
-        """Return the delay in seconds before ``attempt`` (1-based)."""
-        return self.initial_delay * (self.backoff ** (attempt - 1))
 
 
 class UploadRunner:
@@ -162,30 +149,19 @@ class UploadRunner:
         re-raised untouched, because retrying it would only repeat the same
         failure for every remaining file. An :class:`ItemError` marked not
         retryable is re-raised too: it concerns this file alone, but iCloud
-        has already given its final answer about it.
+        has already given its final answer about it. A connection that went
+        away is waited out rather than counted against the file.
         """
-        if self._uploader is None:  # pragma: no cover - guarded by _process
+        uploader = self._uploader
+        if uploader is None:  # pragma: no cover - guarded by _process
             raise FatalError("No uploader configured for a non-dry run")
 
-        for attempt in range(1, self._retry.attempts + 1):
-            try:
-                return self._uploader.upload(item.path)
-            except FatalError:
-                raise
-            except ItemError as exc:
-                if attempt == self._retry.attempts or not exc.retryable:
-                    raise
-                delay = self._retry.delay_for(attempt)
-                LOGGER.warning(
-                    "Attempt %d/%d for %s failed (%s); retrying in %.1fs",
-                    attempt,
-                    self._retry.attempts,
-                    item.path.name,
-                    exc,
-                    delay,
-                )
-                self._sleep(delay)
-        raise AssertionError("unreachable")  # pragma: no cover
+        return with_retries(
+            lambda: uploader.upload(item.path),
+            policy=self._retry,
+            label=item.path.name,
+            sleep=self._sleep,
+        )
 
     def _notify(self, item: PlannedUpload, status: UploadStatus | None) -> None:
         """Invoke the progress hook, if one was supplied."""
@@ -193,4 +169,4 @@ class UploadRunner:
             self._progress(item, status)
 
 
-__all__ = ["ProgressHook", "RetryPolicy", "StartHook", "UploadRunner"]
+__all__ = ["ProgressHook", "StartHook", "UploadRunner"]

@@ -11,6 +11,7 @@ from pathlib import Path
 from isynca.errors import ConfigError
 from isynca.logging import get_logger
 from isynca.media.types import MediaFile, MediaKind, classify, extensions_for
+from isynca.ordering import natural_key
 
 LOGGER = get_logger("scanner")
 
@@ -131,10 +132,12 @@ class Scanner:
             source, followlinks=self.follow_symlinks, onerror=self._on_walk_error
         ):
             root_path = Path(root)
-            dirnames[:] = sorted(
-                name for name in dirnames if not self._is_excluded(root_path / name)
-            )
-            for filename in sorted(filenames):
+            dirnames[:] = [
+                name
+                for name in sorted(dirnames, key=natural_key)
+                if not self._is_excluded(root_path / name)
+            ]
+            for filename in sorted(filenames, key=natural_key):
                 candidate = self._track(root_path / filename, source, seen)
                 if candidate is not None:
                     yield candidate

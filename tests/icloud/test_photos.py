@@ -1,3 +1,4 @@
+import errno
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ from pyicloud.exceptions import (
     PyiCloudException,
     PyiCloudServiceNotActivatedException,
 )
+from requests import RequestException
 
 from isynca.errors import AlbumNotFoundError, UploadError
 from isynca.icloud.photos import PhotosUploader
@@ -315,6 +317,60 @@ def test_os_error_becomes_upload_error(session):
     session.photos_service.upload_results = [OSError("disk vanished")]
     with pytest.raises(UploadError, match="Could not read"):
         PhotosUploader(session).upload(Path("/a.mp4"))
+
+
+def test_a_dropped_connection_is_flagged_as_transport(session):
+    """The network went, so nothing was decided about this file."""
+    session.photos_service.upload_results = [
+        OSError(errno.EHOSTUNREACH, "No route to host")
+    ]
+    with pytest.raises(UploadError, match="Lost the connection") as raised:
+        PhotosUploader(session).upload(Path("/a.mp4"))
+
+    assert raised.value.transport
+    assert raised.value.retryable
+
+
+def test_a_dropped_connection_on_the_fallback_path_is_flagged_too(slow_session):
+    slow_session.photos_service.upload_results = [ConnectionResetError("peer hung up")]
+    with pytest.raises(UploadError, match="Lost the connection") as raised:
+        PhotosUploader(slow_session).upload(Path("/a.mp4"))
+
+    assert raised.value.transport
+
+
+def test_a_dropped_connection_filing_into_an_album_is_flagged(session):
+    session.photos_service.album_container.albums["Trip"] = FakeAlbum(
+        "Trip", add_error=OSError(errno.ECONNRESET, "Connection reset by peer")
+    )
+    with pytest.raises(UploadError, match=r"filing /a\.mp4 into 'Trip'") as raised:
+        PhotosUploader(session, album="Trip").upload(Path("/a.mp4"))
+
+    assert raised.value.transport
+
+
+def test_a_dropped_connection_resolving_an_album_is_not_a_missing_album(session):
+    """A lookup the network ate says nothing about whether the album exists."""
+    session.photos_service.album_container.find_error = RequestException("dropped")
+    with pytest.raises(UploadError, match="resolving album 'Trip'") as raised:
+        PhotosUploader(session, album="Trip").ensure_album()
+
+    assert raised.value.transport
+
+
+def test_an_album_the_network_hid_is_resolved_on_the_next_try(session):
+    """Caching that failure would file every later upload nowhere."""
+    container = session.photos_service.album_container
+    container.albums["Trip"] = FakeAlbum("Trip")
+    container.find_error = RequestException("dropped")
+    uploader = PhotosUploader(session, album="Trip")
+    with pytest.raises(UploadError):
+        uploader.upload(Path("/a.mp4"))
+
+    container.find_error = None
+    outcome = uploader.upload(Path("/a.mp4"))
+
+    assert container.albums["Trip"].added == [outcome.asset_id]
 
 
 def test_service_property_exposes_photos(session):
