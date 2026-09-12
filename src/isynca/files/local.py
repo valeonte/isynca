@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 
 from isynca.files.client import PART_SUFFIX
 from isynca.logging import get_logger
+from isynca.ordering import natural_key
 
 LOGGER = get_logger("local")
 
@@ -124,12 +125,14 @@ class LocalScanner:
         ):
             here = Path(current)
             relative_dir = _relative(here, base)
-            dirnames[:] = sorted(
+            # Sorted before filtering so that folders are recorded in the
+            # same order they are walked in.
+            dirnames[:] = [
                 name
-                for name in dirnames
+                for name in sorted(dirnames, key=natural_key)
                 if self._keep_dir(tree, here / name, relative_dir / name)
-            )
-            for name in sorted(filenames):
+            ]
+            for name in sorted(filenames, key=natural_key):
                 self._consider(tree, here / name, relative_dir / name)
         return tree
 

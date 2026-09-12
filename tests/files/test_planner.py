@@ -294,3 +294,22 @@ def test_plan_helpers_group_actions(make_local):
     assert not plan.empty
     assert plan.deletions == []
     assert plan.of(ActionKind.MKDIR_REMOTE)[0].depth == 1
+
+
+# --- ordering ----------------------------------------------------------------
+
+
+def test_actions_come_out_in_natural_order():
+    """Numbered files sync 1, 2, 10 -- not 1, 10, 2 -- so progress reads right."""
+    remote = index(*(remote_file(f"scan {n}.pdf") for n in (10, 1, 2)))
+    plan = plan_for(remote=remote)
+    assert [str(a.path) for a in plan.actions] == [
+        "scan 1.pdf",
+        "scan 2.pdf",
+        "scan 10.pdf",
+    ]
+
+
+def test_folders_come_out_in_natural_order():
+    plan = plan_for(tree(dirs=["batch 10", "batch 2", "batch 1"]))
+    assert [str(a.path) for a in plan.actions] == ["batch 1", "batch 2", "batch 10"]

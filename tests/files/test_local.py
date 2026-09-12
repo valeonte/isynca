@@ -132,3 +132,17 @@ def test_extra_patterns_join_the_defaults():
 def test_a_scanner_accepts_prebuilt_rules(root):
     tree = LocalScanner(exclude=ExcludeRules(["*.bin"])).scan(root)
     assert not any(str(p).endswith(".bin") for p in tree.files)
+
+
+def test_numbered_files_are_walked_in_natural_order(tmp_path):
+    for n in (1, 10, 2):
+        (tmp_path / f"scan {n}.pdf").write_bytes(b"x")
+    tree = LocalScanner().scan(tmp_path)
+    assert [str(p) for p in tree.files] == ["scan 1.pdf", "scan 2.pdf", "scan 10.pdf"]
+
+
+def test_numbered_folders_are_walked_in_natural_order(tmp_path):
+    for n in (1, 10, 2):
+        (tmp_path / f"batch {n}").mkdir()
+    tree = LocalScanner().scan(tmp_path)
+    assert [str(p) for p in tree.dirs] == ["batch 1", "batch 2", "batch 10"]

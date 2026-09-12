@@ -28,6 +28,7 @@ from isynca.files.state import EntryKind, SyncRecord
 from isynca.files.types import RemoteNode
 from isynca.ledger.hashing import hash_file
 from isynca.logging import get_logger
+from isynca.ordering import natural_path_key
 
 LOGGER = get_logger("files-planner")
 
@@ -179,10 +180,12 @@ class SyncPlanner:
         remote_dirs = {p: n for p, n in remote.items() if n.is_dir}
         remote_files = {p: n for p, n in remote.items() if not n.is_dir}
 
-        for path in sorted(set(local.dirs) | set(remote_dirs) | _dirs_in(state)):
+        dirs = set(local.dirs) | set(remote_dirs) | _dirs_in(state)
+        for path in sorted(dirs, key=natural_path_key):
             self._plan_dir(plan, path, local, remote_dirs, state.get(path))
 
-        for path in sorted(set(local.files) | set(remote_files) | _files_in(state)):
+        files = set(local.files) | set(remote_files) | _files_in(state)
+        for path in sorted(files, key=natural_path_key):
             self._plan_file(
                 plan,
                 path,
