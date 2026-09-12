@@ -226,7 +226,7 @@ def sync(
         )
 
     report.direction = str(direction)
-    _finish(app_ctx, report)
+    _print_report(app_ctx.console, report)
     if not report.ok:
         raise typer.Exit(code=1)
 
@@ -311,14 +311,14 @@ def _print_conflicts(console: Console, plan: SyncPlan) -> None:
     console.print(table)
 
 
-def _finish(app_ctx: AppContext, report: SyncReport) -> None:
-    """Print the summary and offer the same story to the desktop."""
+def _print_report(console: Console, report: SyncReport) -> None:
+    """Render the sync summary, plus any failures."""
     table = Table(title="Sync summary", show_header=False)
     table.add_column("Metric", style="bold")
     table.add_column("Value", justify="right")
     for label, value in report.summary_rows():
         table.add_row(label, value)
-    app_ctx.console.print(table)
+    console.print(table)
 
     if report.failures:
         failures = Table(title="Failures")
@@ -326,12 +326,4 @@ def _finish(app_ctx: AppContext, report: SyncReport) -> None:
         failures.add_column("Error", overflow="fold")
         for failure in report.failures:
             failures.add_row(str(failure.path), failure.message)
-        app_ctx.console.print(failures)
-
-    headline = "Dry run finished" if report.dry_run else "Sync finished"
-    parts = [f"{report.changed} change(s)"]
-    if report.conflicts:
-        parts.append(f"{len(report.conflicts)} conflict(s)")
-    if report.failed:
-        parts.append(f"{report.failed} failed")
-    app_ctx.notify.finished(headline, ", ".join(parts))
+        console.print(failures)

@@ -168,29 +168,26 @@ def test_load_uses_default_path_when_absent(monkeypatch, tmp_path):
     assert config.apple_id is None
 
 
-def test_notifications_are_on_by_default():
+def test_no_log_files_by_default():
     config = Config()
-    assert config.notify is True
-    assert config.notify_level == "WARNING"
+    assert config.log_file is None
+    assert config.warn_log is None
 
 
-def test_notify_level_is_case_insensitive():
-    assert Config(notify_level="error").notify_level == "ERROR"
-
-
-def test_an_unknown_notify_level_is_rejected():
-    with pytest.raises(ConfigError, match="notify_level must be one of"):
-        Config(notify_level="chatty")
-
-
-def test_a_non_string_notify_level_from_a_file_is_rejected(tmp_path):
-    """A TOML file can hold anything; the error should still be a clear one."""
+def test_log_paths_from_a_file_are_expanded(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
     path = tmp_path / "config.toml"
-    path.write_text("notify_level = 30\n")
-    with pytest.raises(ConfigError, match="notify_level must be one of"):
-        load(config_path=path)
+    path.write_text('[isynca]\nlog_file = "~/full.log"\nwarn_log = "~/warn.log"\n')
+    config = load(config_path=path, environ={})
+    assert config.log_file == tmp_path / "full.log"
+    assert config.warn_log == tmp_path / "warn.log"
 
 
-def test_notify_settings_come_from_the_environment():
-    settings = load_env({"ISYNCA_NOTIFY": "off", "ISYNCA_NOTIFY_LEVEL": "error"})
-    assert settings == {"notify": False, "notify_level": "error"}
+def test_log_paths_from_the_environment_are_expanded(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config = load(
+        config_path=tmp_path / "absent.toml",
+        environ={"ISYNCA_LOG_FILE": "~/full.log", "ISYNCA_WARN_LOG": "~/warn.log"},
+    )
+    assert config.log_file == tmp_path / "full.log"
+    assert config.warn_log == tmp_path / "warn.log"

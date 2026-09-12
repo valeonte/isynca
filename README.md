@@ -330,8 +330,8 @@ min_size = 1024
 exclude = ["*/.Trash/*", "*.partial"]
 prune_empty_dirs = true
 max_deletes = 50
-notify = true
-notify_level = "WARNING"
+log_file = "~/isynca/full.log"
+warn_log = "~/isynca/problems.log"
 ```
 
 State lives under the XDG directories: the ledger, the drive sync state and
@@ -342,54 +342,37 @@ The two databases are kept apart on purpose. `ledger.db` is keyed by content
 hash for a one-way flow; `drive.db` is keyed by path for a two-way one, and a
 single file pretending to be both would serve neither.
 
-## Desktop notifications
+## Log files
 
-A run that logged anything worth seeing tells the desktop about it when it
-ends:
-
-```
-isynca: 1 error, 12 warnings
-upload refused: HEIC variant not accepted
-… and 12 more
-```
-
-Nothing is sent while the run is in progress. Warnings here are per-file --
-one unreadable folder, one photo with no capture date -- and a large scan logs
-hundreds of them, so they are counted and summarised into a single
-notification rather than popped one at a time. A run that takes more than
-twenty seconds also reports finishing, folded into the same notification:
-
-```
-isynca: Upload finished
-412 uploaded, 3 skipped · 12 warnings
-```
-
-Short runs stay silent unless something went wrong. An error that aborts a run
-is always notified, however briefly the run lasted.
-
-This turns itself on when there is a desktop to talk to and stays out of the
-way when there is not. The signal is a session bus address in the
-environment, so cron jobs, ssh sessions, and CI are silent without needing to
-be told. Delivery is the freedesktop `org.freedesktop.Notifications`
-interface, which KDE Plasma, GNOME, Cinnamon, and XFCE all implement, over
-[jeepney](https://pypi.org/project/jeepney/) -- no notification daemon of
-isynca's own, and no `notify-send` subprocess. A desktop that will not take
-the message is never a reason to fail a run that has otherwise finished.
-
-To switch it off, any of:
+Everything a run logs goes to the terminal. Two options also write it to a
+file, for the runs you walk away from:
 
 ```bash
-isynca --no-notify photos upload ~/Media   # this run
-export ISYNCA_NOTIFY=0                     # this shell
+isynca --log-file ~/isynca/full.log photos upload ~/Media       # everything
+isynca --warn-log ~/isynca/problems.log photos upload ~/Media   # warnings and errors
 ```
 
-```toml
-[isynca]
-notify = false                             # always
+`--log-file` records the full log, debug lines included, whether or not
+`--verbose` is on -- the terminal stays as quiet as it was. `--warn-log`
+records only warnings and above, which for a large scan is the short list
+worth reading: the unreadable folders, the photos with no capture date, the
+uploads iCloud refused. Either, both, or neither can be given, and one run
+can write both files.
+
+Both files are appended to, run after run, and every line carries a
+timestamp, level, and logger name so that runs can be told apart:
+
+```
+2026-09-12 08:41:07,213 WARNING  isynca.media.scanner: cannot read /media/trip/day3: Permission denied
+2026-09-12 08:53:22,980 ERROR    isynca.sync.runner: upload refused: HEIC variant not accepted
 ```
 
-`notify_level` raises the bar instead of removing it: `"ERROR"` reports only
-failures, leaving per-file warnings to the terminal.
+A missing parent directory is created; a path that cannot be opened at all is
+reported before the command starts, not discovered at its end.
+
+Like every other setting, both paths can live in `config.toml` (`log_file`,
+`warn_log`) or the environment (`ISYNCA_LOG_FILE`, `ISYNCA_WARN_LOG`), so a
+scheduled run can log without the flag being repeated in the crontab.
 
 ## Development
 
