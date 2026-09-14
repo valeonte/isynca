@@ -25,6 +25,13 @@ def login(
         bool,
         typer.Option("--store-password", help="Save the password in the keyring."),
     ] = False,
+    accept_terms: Annotated[
+        bool,
+        typer.Option(
+            "--accept-terms",
+            help="Accept updated iCloud terms of service on your behalf.",
+        ),
+    ] = False,
 ) -> None:
     """Authenticate, completing two-factor authentication interactively."""
     app_ctx = get_context(ctx)
@@ -39,6 +46,7 @@ def login(
         cookie_dir=app_ctx.config.cookie_dir,
         interactive=True,
         code_prompt=lambda: typer.prompt("Two-factor code"),
+        accept_terms=accept_terms,
     )
 
     if store_password:

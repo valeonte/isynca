@@ -225,3 +225,11 @@ class ICloudSessionLike(Protocol):
     def trust_session(self) -> bool:
         """Ask Apple to trust this session; return whether it did."""
         ...
+
+    def authenticate(self) -> None:
+        """Renew the session from the cached token, issuing fresh cookies.
+
+        pyicloud's method takes optional arguments too; only the bare form is
+        needed here, and a wider signature satisfies this protocol.
+        """
+        ...

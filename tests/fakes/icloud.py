@@ -186,6 +186,9 @@ class FakeSession:
     validated_codes: list[str] = field(default_factory=list)
     trust_calls: int = 0
     drive_error: Exception | None = None
+    renewals: int = 0
+    renew_error: Exception | None = None
+    renew_requires_2fa: bool = False
 
     @property
     def photos(self) -> FakePhotosService:
@@ -212,6 +215,14 @@ class FakeSession:
         if self.trust_result:
             self.is_trusted_session = True
         return self.trust_result
+
+    def authenticate(self) -> None:
+        """Record a session renewal, failing if one was scripted to."""
+        self.renewals += 1
+        if self.renew_error is not None:
+            raise self.renew_error
+        if self.renew_requires_2fa:
+            self.requires_2fa = True
 
 
 def api_error(message: str) -> PyiCloudAPIResponseException:

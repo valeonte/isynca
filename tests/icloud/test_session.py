@@ -1,5 +1,6 @@
 import pytest
 from pyicloud.exceptions import (
+    PyiCloudAcceptTermsException,
     PyiCloudFailedLoginException,
     PyiCloudServiceNotActivatedException,
 )
@@ -14,9 +15,9 @@ ACCOUNT = "tester@example.com"
 def factory_for(fake, recorder=None):
     """Return a service factory yielding ``fake`` and recording its arguments."""
 
-    def factory(apple_id, password=None, cookie_directory=None):
+    def factory(apple_id, password=None, cookie_directory=None, accept_terms=False):
         if recorder is not None:
-            recorder.append((apple_id, password, cookie_directory))
+            recorder.append((apple_id, password, cookie_directory, accept_terms))
         return fake
 
     return factory
@@ -27,7 +28,7 @@ def test_connect_returns_ready_session():
     calls = []
     api = mod.connect(ACCOUNT, service_factory=factory_for(fake, calls))
     assert api is fake
-    assert calls == [(ACCOUNT, None, None)]
+    assert calls == [(ACCOUNT, None, None, False)]
 
 
 def test_connect_requires_an_apple_id():
@@ -53,6 +54,22 @@ def test_connect_passes_the_password_through():
         ACCOUNT, password="hunter2", service_factory=factory_for(FakeSession(), calls)
     )
     assert calls[0][1] == "hunter2"
+
+
+def test_connect_passes_accept_terms_through():
+    calls = []
+    mod.connect(
+        ACCOUNT, accept_terms=True, service_factory=factory_for(FakeSession(), calls)
+    )
+    assert calls[0][3] is True
+
+
+def test_pending_terms_point_at_the_login_flag():
+    def factory(*args, **kwargs):
+        raise PyiCloudAcceptTermsException("Set --accept-terms to accept them.")
+
+    with pytest.raises(AuthenticationError, match="auth login --accept-terms"):
+        mod.connect(ACCOUNT, service_factory=factory)
 
 
 def test_bad_credentials_raise_authentication_error():

@@ -32,6 +32,18 @@ def test_login_prompts_for_a_password(invoke, fake_connect, monkeypatch):
     assert fake_connect[0]["interactive"] is True
 
 
+def test_login_can_accept_updated_terms(invoke, fake_connect, monkeypatch):
+    monkeypatch.setattr("isynca.cli.auth.typer.prompt", lambda *a, **k: "hunter2")
+    invoke("--apple-id", ACCOUNT, "auth", "login", "--accept-terms")
+    assert fake_connect[0]["accept_terms"] is True
+
+
+def test_login_does_not_accept_terms_by_default(invoke, fake_connect, monkeypatch):
+    monkeypatch.setattr("isynca.cli.auth.typer.prompt", lambda *a, **k: "hunter2")
+    invoke("--apple-id", ACCOUNT, "auth", "login")
+    assert fake_connect[0]["accept_terms"] is False
+
+
 def test_login_passes_a_working_2fa_prompt(invoke, fake_connect, monkeypatch):
     monkeypatch.setattr("isynca.cli.auth.typer.prompt", lambda *a, **k: "123456")
     invoke("--apple-id", ACCOUNT, "auth", "login")
