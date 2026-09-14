@@ -12,6 +12,15 @@ SYNC_DIR=/mnt/data/iCloud
 LOG_DIR="$HOME/logs/isynca"
 KEEP_DAYS=10
 
+# cron starts with no session bus, and without one `keyring` silently falls
+# back to a file backend that holds nothing. The Apple ID password lives in
+# the desktop keyring, and isynca needs it when iCloud drops the session
+# mid-run and the cached token will not renew it. Point at the login
+# session's bus so the keyring is reachable; this works while you are logged
+# in, which is when the keyring is unlocked anyway.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+
 mkdir -p "$LOG_DIR"
 
 # Only one sync at a time. If a previous run still holds the lock, leave

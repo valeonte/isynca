@@ -5,11 +5,25 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
 import pytest
-from pyicloud.exceptions import PyiCloudAPIResponseException
+from pyicloud.exceptions import (
+    PyiCloudAPIResponseException,
+    PyiCloudFailedLoginException,
+)
 from pyicloud.services.drive import CLOUD_DOCS_ZONE_ID_ROOT
 
-from isynca.errors import DriveError, DriveListingError, DriveNotAvailableError
-from isynca.files.client import DriveClient, NamedReader, node_name, parse_date
+from isynca.errors import (
+    DriveError,
+    DriveListingError,
+    DriveNotAvailableError,
+    TwoFactorRequiredError,
+)
+from isynca.files.client import (
+    SESSION_REJECTED,
+    DriveClient,
+    NamedReader,
+    node_name,
+    parse_date,
+)
 from isynca.files.types import NodeKind
 from tests.fakes.drive import (
     APP_LIBRARY,
@@ -83,6 +97,70 @@ def test_folder_without_items_stops_the_run(drive, client):
     drive.missing_items.add(CLOUD_DOCS_ZONE_ID_ROOT)
     with pytest.raises(DriveListingError, match="NOT_FOUND"):
         list(client.walk())
+
+
+def _session_rejected() -> PyiCloudAPIResponseException:
+    return PyiCloudAPIResponseException(
+        "Authentication required for Account.", SESSION_REJECTED
+    )
+
+
+@pytest.fixture
+def session(drive):
+    return FakeSession(drive_service=drive)
+
+
+def test_a_rejected_session_is_renewed_once_and_the_call_retried(drive, session):
+    drive.errors_once["get_node_data"] = _session_rejected()
+    client = DriveClient(session)
+    paths = [str(node.path) for node in client.walk()]
+    assert "top.txt" in paths
+    assert session.renewals == 1
+
+
+def test_a_session_rejected_again_after_renewal_stops_the_run(drive, session):
+    drive.errors["get_node_data"] = _session_rejected()
+    client = DriveClient(session)
+    with pytest.raises(DriveListingError, match=str(SESSION_REJECTED)):
+        list(client.walk())
+    assert session.renewals == 1
+
+
+def test_a_failed_renewal_reports_the_rejection_not_the_repair(drive, session):
+    drive.errors_once["get_node_data"] = _session_rejected()
+    session.renew_error = PyiCloudFailedLoginException("No password set")
+    client = DriveClient(session)
+    with pytest.raises(DriveListingError, match="Authentication required") as info:
+        list(client.walk())
+    assert "No password set" not in str(info.value)
+    assert session.renewals == 1
+
+
+def test_a_renewal_that_needs_2fa_says_so_instead_of_retrying(drive, session):
+    drive.errors["get_node_data"] = _session_rejected()
+    session.renew_requires_2fa = True
+    client = DriveClient(session)
+    with pytest.raises(TwoFactorRequiredError, match="auth login"):
+        list(client.walk())
+    assert session.renewals == 1
+
+
+def test_other_api_errors_are_not_treated_as_a_rejected_session(drive, session):
+    drive.errors_once["get_node_data"] = PyiCloudAPIResponseException("nope", 500)
+    client = DriveClient(session)
+    with pytest.raises(DriveListingError, match="500"):
+        list(client.walk())
+    assert session.renewals == 0
+
+
+def test_upload_after_renewal_resends_the_whole_file(drive, session, tmp_path):
+    drive.errors_once["send_file"] = _session_rejected()
+    client = DriveClient(session)
+    source = tmp_path / "notes.md"
+    source.write_bytes(b"hello")
+    client.upload(client.root(), source)
+    assert session.renewals == 1
+    assert [content for _, _, content, _ in drive.uploaded] == [b"hello"]
 
 
 def test_missing_drive_service_is_fatal():

@@ -100,6 +100,8 @@ class FakeDriveService:
     created: list[tuple[str, str]] = field(default_factory=list)
     trashed: list[tuple[str, str]] = field(default_factory=list)
     errors: dict[str, Exception] = field(default_factory=dict)
+    errors_once: dict[str, Exception] = field(default_factory=dict)
+    """Like ``errors``, but each entry is raised on the first call only."""
     unlistable: set[str] = field(default_factory=set)
     missing_items: set[str] = field(default_factory=set)
     silent_upload: bool = False
@@ -109,7 +111,7 @@ class FakeDriveService:
 
     def _raise_if_scripted(self, call: str) -> None:
         """Raise the exception a test scripted for ``call``, if any."""
-        error = self.errors.get(call)
+        error = self.errors_once.pop(call, None) or self.errors.get(call)
         if error is not None:
             raise error
 
@@ -171,8 +173,10 @@ class FakeDriveService:
         ``notes 2.md`` alongside the original, which is the whole reason a
         remote update has to trash before it uploads.
         """
-        self._raise_if_scripted("send_file")
+        # Read before failing: a scripted failure should leave the stream
+        # consumed, the way a real request that died mid-body would.
         content = file_object.read()
+        self._raise_if_scripted("send_file")
         self.uploaded.append((folder_id, file_object.name, content, kwargs))
         if self.silent_upload:
             return

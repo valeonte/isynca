@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import IO, Any, cast
 
-from pyicloud.exceptions import PyiCloudException
+from pyicloud.exceptions import PyiCloudAPIResponseException, PyiCloudException
 from pyicloud.services.drive import CLOUD_DOCS_ZONE, CLOUD_DOCS_ZONE_ID_ROOT
 from requests import RequestException
 
@@ -35,6 +35,7 @@ from isynca.errors import (
     DriveError,
     DriveListingError,
     DriveNotAvailableError,
+    TwoFactorRequiredError,
 )
 from isynca.files.types import FILE_TYPE, NodeKind, RemoteNode
 from isynca.icloud.protocols import DriveServiceLike, ICloudSessionLike
@@ -51,6 +52,16 @@ only once the last byte has arrived, so an interrupted run leaves a visibly
 partial file rather than a plausible-looking truncated one.
 """
 
+SESSION_REJECTED = 421
+"""The status iCloud answers with when it has stopped honouring the session.
+
+The body says ``Invalid global session``. It arrives sporadically in the
+middle of a run whose token is perfectly valid -- the surrounding requests
+succeed with the same cookies -- so it is a request to renew, not a verdict
+on the login. pyicloud 1.x re-authenticated and retried on it transparently;
+2.x raises it, so the retry lives here instead.
+"""
+
 _TRANSPORT_ERRORS = (PyiCloudException, RequestException, KeyError, ValueError)
 """What a Drive call can fail with.
 
@@ -58,6 +69,13 @@ _TRANSPORT_ERRORS = (PyiCloudException, RequestException, KeyError, ValueError)
 when a download response carries neither a data nor a package token, and
 ``ValueError`` because a malformed JSON body surfaces that way.
 """
+
+
+def _session_rejected(exc: BaseException) -> bool:
+    """Return whether ``exc`` is iCloud refusing the session mid-run."""
+    return (
+        isinstance(exc, PyiCloudAPIResponseException) and exc.code == SESSION_REJECTED
+    )
 
 
 def _drive_error(message: str, exc: BaseException) -> DriveError:
@@ -137,12 +155,48 @@ class DriveClient:
     """Reads and writes iCloud Drive in terms of paths and value objects."""
 
     def __init__(self, session: ICloudSessionLike) -> None:
+        self._session = session
         try:
             self._drive: DriveServiceLike = session.drive
         except (PyiCloudException, AttributeError) as exc:
             raise DriveNotAvailableError(
                 f"This account exposes no iCloud Drive service: {exc}"
             ) from exc
+
+    def _renewing[T](self, operation: Callable[[], T]) -> T:
+        """Run one Drive call, renewing the session once if iCloud rejects it.
+
+        Renewal re-validates the cached token, which hands out fresh service
+        cookies, and falls back to a fresh login with the keyring password
+        when Apple will not take the token either. The drive service is then
+        re-read so its per-service consent is requested on the new cookies.
+        If the renewal itself is refused, the session really has expired, and
+        the original rejection is raised so the caller reports the cause
+        rather than the failed repair.
+
+        A fresh login can come back wanting a two-factor code. pyicloud
+        records that rather than raising, so it is checked for here: retrying
+        on an unverified session would only earn a second rejection, and the
+        useful message is the one naming ``auth login``.
+        """
+        try:
+            return operation()
+        except PyiCloudAPIResponseException as exc:
+            if not _session_rejected(exc):
+                raise
+            LOGGER.info("iCloud rejected the session mid-run; renewing it")
+            try:
+                self._session.authenticate()
+            except PyiCloudException as renew_exc:
+                LOGGER.warning("Could not renew the session: %s", renew_exc)
+                raise exc from renew_exc
+            if self._session.requires_2fa:
+                raise TwoFactorRequiredError(
+                    "Renewing the iCloud session needs two-factor "
+                    "authentication. Run 'isynca auth login' to complete it."
+                ) from exc
+            self._drive = self._session.drive
+        return operation()
 
     def root(self) -> RemoteNode:
         """Return the root of iCloud Drive, as Finder shows it.
@@ -240,7 +294,7 @@ class DriveClient:
     def _node_data(self, drivewsid: str) -> dict[str, Any]:
         """Fetch one node's record, translating transport failures."""
         try:
-            return self._drive.get_node_data(drivewsid)
+            return self._renewing(lambda: self._drive.get_node_data(drivewsid))
         except _TRANSPORT_ERRORS as exc:
             raise DriveListingError(f"Could not read {drivewsid}: {exc}") from exc
 
@@ -296,7 +350,9 @@ class DriveClient:
             partial.write_bytes(b"")
             return 0
 
-        response = self._drive.get_file(node.docwsid, zone=node.zone, stream=True)
+        response = self._renewing(
+            lambda: self._drive.get_file(node.docwsid, zone=node.zone, stream=True)
+        )
         written = 0
         with partial.open("wb") as handle:
             for chunk in response.iter_content(chunk_size=1 << 20):
@@ -321,7 +377,10 @@ class DriveClient:
         Raises:
             DriveError: The upload failed.
         """
-        try:
+
+        def send() -> None:
+            # Opened per attempt: a retry after a session renewal must send
+            # the file from the start, not from wherever the last try stopped.
             stat = source.stat()
             with source.open("rb") as handle:
                 self._drive.send_file(
@@ -334,6 +393,9 @@ class DriveClient:
                     mtime=stat.st_mtime,
                     ctime=stat.st_mtime,
                 )
+
+        try:
+            self._renewing(send)
         except (OSError, *_TRANSPORT_ERRORS) as exc:
             raise _drive_error(f"Could not upload {source}", exc) from exc
         LOGGER.info("Uploaded %s -> %s", source, parent.path / source.name)
@@ -351,7 +413,9 @@ class DriveClient:
                 without Apple saying where.
         """
         try:
-            reply = self._drive.create_folders(parent.drivewsid, name)
+            reply = self._renewing(
+                lambda: self._drive.create_folders(parent.drivewsid, name)
+            )
             created = next(iter(reply["folders"]))
         except (*_TRANSPORT_ERRORS, StopIteration, TypeError) as exc:
             raise _drive_error(
@@ -370,7 +434,9 @@ class DriveClient:
             DriveError: The node could not be trashed.
         """
         try:
-            self._drive.move_items_to_trash(node.drivewsid, node.etag)
+            self._renewing(
+                lambda: self._drive.move_items_to_trash(node.drivewsid, node.etag)
+            )
         except _TRANSPORT_ERRORS as exc:
             raise _drive_error(f"Could not delete {node.path}", exc) from exc
         LOGGER.info("Trashed %s", node.path)
