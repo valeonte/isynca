@@ -13,7 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pyicloud import PyiCloudService
-from pyicloud.exceptions import PyiCloudException, PyiCloudFailedLoginException
+from pyicloud.exceptions import (
+    PyiCloudAcceptTermsException,
+    PyiCloudException,
+    PyiCloudFailedLoginException,
+)
 from pyicloud.utils import (
     delete_password_in_keyring,
     get_password_from_keyring,
@@ -53,6 +57,7 @@ def connect(
     cookie_dir: Path | None = None,
     interactive: bool = False,
     code_prompt: CodePrompt | None = None,
+    accept_terms: bool = False,
     service_factory: Callable[..., ICloudSessionLike] = PyiCloudService,
 ) -> ICloudSessionLike:
     """Authenticate and return a ready-to-use session.
@@ -65,11 +70,15 @@ def connect(
             prompting, rather than raising.
         code_prompt: Callable returning a 2FA code; required when
             ``interactive`` is set.
+        accept_terms: Whether to accept updated iCloud terms of service
+            on the account's behalf. Apple records the acceptance, so it
+            only needs doing once per terms revision.
         service_factory: Injection point for tests.
 
     Raises:
-        AuthenticationError: Credentials were rejected or the session is
-            unusable.
+        AuthenticationError: Credentials were rejected, the session is
+            unusable, or updated terms are pending and ``accept_terms``
+            is false.
         TwoFactorRequiredError: 2FA is pending and ``interactive`` is false.
     """
     if not apple_id:
@@ -83,9 +92,16 @@ def connect(
             apple_id,
             password,
             cookie_directory=str(cookie_dir) if cookie_dir else None,
+            accept_terms=accept_terms,
         )
     except PyiCloudFailedLoginException as exc:
         raise AuthenticationError(f"Login failed for {apple_id}: {exc}") from exc
+    except PyiCloudAcceptTermsException as exc:
+        # pyicloud's message points at its own CLI flag; ours lives on login.
+        raise AuthenticationError(
+            "Apple has updated the iCloud terms of service and they must be "
+            "accepted before continuing. Run 'isynca auth login --accept-terms'."
+        ) from exc
     except PyiCloudException as exc:
         raise AuthenticationError(f"Could not connect to iCloud: {exc}") from exc
 

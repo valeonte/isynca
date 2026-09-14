@@ -46,6 +46,13 @@ isynca auth status                             # no --apple-id needed
 isynca photos upload ~/Media                   # nor here
 ```
 
+When Apple revises the iCloud terms of service, every command fails until they
+are accepted on the account. Do that once with:
+
+```bash
+isynca auth login --accept-terms
+```
+
 The account is stored beside the session cookies in `~/.local/share/isynca/`,
 not written into your `config.toml` — rewriting that file would discard your
 comments and layout. It is the lowest-precedence source, so `--apple-id`,
