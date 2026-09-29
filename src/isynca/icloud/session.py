@@ -12,7 +12,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from pyicloud import PyiCloudService
 from pyicloud.exceptions import (
     PyiCloudAcceptTermsException,
     PyiCloudException,
@@ -26,6 +25,7 @@ from pyicloud.utils import (
 )
 
 from isynca.errors import AuthenticationError, ConfigError, TwoFactorRequiredError
+from isynca.icloud.drive import ICloudService
 from isynca.icloud.protocols import ICloudSessionLike
 from isynca.logging import get_logger
 
@@ -58,7 +58,7 @@ def connect(
     interactive: bool = False,
     code_prompt: CodePrompt | None = None,
     accept_terms: bool = False,
-    service_factory: Callable[..., ICloudSessionLike] = PyiCloudService,
+    service_factory: Callable[..., ICloudSessionLike] = ICloudService,
 ) -> ICloudSessionLike:
     """Authenticate and return a ready-to-use session.
 
@@ -150,7 +150,7 @@ def status(
     apple_id: str,
     *,
     cookie_dir: Path | None = None,
-    service_factory: Callable[..., ICloudSessionLike] = PyiCloudService,
+    service_factory: Callable[..., ICloudSessionLike] = ICloudService,
 ) -> SessionStatus:
     """Report on the stored session without prompting for anything."""
     password_stored = password_exists_in_keyring(apple_id)
