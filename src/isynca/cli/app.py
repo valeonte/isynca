@@ -13,6 +13,7 @@ from isynca import __version__
 from isynca.cli import auth as auth_cli
 from isynca.cli import files as files_cli
 from isynca.cli import ledger as ledger_cli
+from isynca.cli import media as media_cli
 from isynca.cli import photos as photos_cli
 from isynca.cli.context import AppContext
 from isynca.config import load
@@ -30,6 +31,7 @@ app.add_typer(auth_cli.app, name="auth")
 app.add_typer(photos_cli.app, name="photos")
 app.add_typer(ledger_cli.app, name="ledger")
 app.add_typer(files_cli.app, name="files")
+app.add_typer(media_cli.app, name="media")
 
 
 def _version_callback(value: bool) -> None:

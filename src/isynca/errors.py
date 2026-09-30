@@ -72,6 +72,15 @@ class ArchiveError(ItemError):
     """One file could not be moved into the archive target."""
 
 
+class RotationError(ItemError):
+    """One video's rotation could not be read or rewritten.
+
+    Always raised with ``retryable=False``: a file that is not an MP4/MOV,
+    holds no video track, or is mirrored will be exactly as unrotatable on the
+    next attempt.
+    """
+
+
 class DriveError(ItemError):
     """One iCloud Drive file could not be transferred."""
 

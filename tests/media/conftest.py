@@ -96,3 +96,32 @@ def make_video(tmp_path):
         return path
 
     return factory
+
+
+IDENTITY = (1 << 16, 0, 0, 1 << 16)
+
+
+def tkhd(
+    cells: tuple[int, int, int, int] = IDENTITY,
+    width: int = 1280,
+    height: int = 720,
+    version: int = 0,
+) -> bytes:
+    """Build a ``tkhd`` box with the given ``(a, b, c, d)`` matrix cells.
+
+    ``width`` and ``height`` are whole pixels; they are stored as 16.16.
+    """
+    a, b, c, d = cells
+    head = bytes([version, 0, 0, 7])
+    times = struct.pack(">QQIIQ" if version == 1 else ">IIIII", 1, 1, 1, 0, 1000)
+    reserved = b"\0" * 8 + struct.pack(">hhhh", 0, 0, 0, 0)
+    matrix = struct.pack(">9i", a, b, 0, c, d, 0, 0, 0, 1 << 30)
+    size = struct.pack(">II", width << 16, height << 16)
+    return box(b"tkhd", head + times + reserved + matrix + size)
+
+
+def trak(handler: bytes = b"vide", header: bytes | None = None) -> bytes:
+    """Build a ``trak`` holding a track header and a ``handler`` media box."""
+    hdlr = box(b"hdlr", b"\0" * 8 + handler + b"\0" * 12)
+    mdia = box(b"mdia", hdlr)
+    return box(b"trak", (tkhd() if header is None else header) + mdia)

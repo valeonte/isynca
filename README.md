@@ -34,6 +34,7 @@ pixi run isynca photos upload ~/Media
 | `isynca ledger list` | List recorded uploads |
 | `isynca ledger forget PATH` | Drop one file's record so it uploads again |
 | `isynca ledger prune` | Remove cache rows for files that no longer exist |
+| `isynca media rotate FILE... --clockwise N` | Write an upright copy of sideways videos, losslessly |
 
 ## Signing in once
 
@@ -286,6 +287,33 @@ isynca files put notes.md --to Notes
 `files list` shows the raw node type alongside each entry, which is how the
 app-library and scratch-folder behaviour above was established in the first
 place.
+
+## Rotating sideways videos
+
+Some phones recorded video sideways and never marked which way up it goes.
+`media rotate` writes an upright copy beside each original:
+
+```bash
+isynca media rotate --clockwise 90 "Videos/WP_20121116_173923Z.mp4"
+# -> Videos/WP_20121116_173923Z_rot90.mp4
+isynca media rotate --clockwise 90 --dry-run Videos/*.mp4   # just show it
+```
+
+`--clockwise` takes 90, 180 or 270 and adds to whatever rotation the file
+already has, so 270 is a quarter turn anticlockwise. The copy is named
+`NAME_rot<degrees>.EXT` after the turn you asked for, and an existing file of
+that name is never overwritten. The original is not modified.
+
+Nothing is re-encoded. An MP4 or MOV says how to display each video track with
+a small matrix in its header, and that matrix is the only thing that differs
+in the copy: there is no quality loss, the size is the same, the capture date
+carries over, and so does the file's modification time. Only MP4, MOV, M4V and
+3GP work this way; anything else is reported and skipped.
+
+Both files now sit in the same folder, so a later `photos upload` of that
+folder uploads both. Move or archive the original first if you only want the
+upright one in iCloud. If the ledger shows the original was already uploaded,
+the command says so -- delete that one in Photos once the copy is up.
 
 ## How re-runs stay cheap
 
