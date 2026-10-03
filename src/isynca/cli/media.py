@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -19,13 +20,15 @@ from isynca.cli.photos import (
     VideosOpt,
     build_scanner,
 )
-from isynca.errors import RotationError
+from isynca.errors import DateError, RotationError
 from isynca.ledger.hashing import hash_file
 from isynca.ledger.store import Ledger
+from isynca.media.capture import read_capture_date
 from isynca.media.compat import Assessment, Verdict, assess, container_name
+from isynca.media.dating import modification_time, write_date
 from isynca.media.probe import MediaInfo, probe
 from isynca.media.rotate import QUARTER_TURNS, rotate_video
-from isynca.media.types import MediaKind
+from isynca.media.types import MediaFile, MediaKind
 
 app = typer.Typer(help="Check and fix up local media files.", no_args_is_help=True)
 
@@ -164,7 +167,7 @@ def rotate(
         for path in files:
             try:
                 _rotate_one(app_ctx, ledger, path, clockwise, dry_run)
-            except RotationError as exc:
+            except (RotationError, OSError) as exc:
                 app_ctx.err_console.print(f"[red]Cannot rotate {path}:[/red] {exc}")
                 failed = True
     if failed:
@@ -192,17 +195,118 @@ def _rotate_one(
         )
 
 
+@app.command("fix-date")
+def fix_date(
+    ctx: typer.Context,
+    sources: SourceArg,
+    date: Annotated[
+        str | None,
+        typer.Option(
+            "--date",
+            help=(
+                "Date taken to write instead of the modification time, e.g. "
+                "2009-07-20T15:30 or 2009-07-20T15:30+03:00. One file only."
+            ),
+            show_default=False,
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show what would be written, writing nothing."),
+    ] = False,
+) -> None:
+    """Write a dated copy of files that have no date taken.
+
+    By default the date written is the file's modification time, and only
+    files with no date taken are touched. --date writes the given date
+    instead, replacing any existing one, and takes a single file. Each copy
+    goes beside its original as NAME_dated.EXT; the original is left
+    untouched. Works on JPEG images and MP4/MOV/3GP videos, losslessly.
+    """
+    override = _parse_override(date, sources) if date is not None else None
+    app_ctx = get_context(ctx)
+    scanner = build_scanner(app_ctx.config)
+
+    seen = False
+    failed = False
+    with app_ctx.open_ledger() as ledger:
+        for media in scanner.scan(sources):
+            seen = True
+            try:
+                _fix_one(app_ctx, ledger, media, override, dry_run)
+            except (DateError, OSError) as exc:
+                app_ctx.err_console.print(f"[red]Cannot date {media.path}:[/red] {exc}")
+                failed = True
+    if not seen:
+        app_ctx.console.print("No media found.")
+    if failed:
+        raise typer.Exit(code=1)
+
+
+def _parse_override(text: str, sources: list[Path]) -> datetime:
+    """Return the ``--date`` value as an aware datetime, local if unzoned.
+
+    One date for many files would stamp a whole folder with the same moment,
+    which is never what anyone means, so it is refused outright.
+    """
+    if len(sources) != 1 or not sources[0].is_file():
+        raise typer.BadParameter("takes exactly one file", param_hint="--date")
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "expected a date like 2009-07-20T15:30 or 2009-07-20T15:30+03:00",
+            param_hint="--date",
+        ) from exc
+    return when if when.tzinfo is not None else when.astimezone()
+
+
+def _fix_one(
+    app_ctx: AppContext,
+    ledger: Ledger,
+    media: MediaFile,
+    override: datetime | None,
+    dry_run: bool,
+) -> None:
+    """Date one file and report it, warning if iCloud holds the undated version."""
+    before = read_capture_date(media)
+    if override is None and before is not None:
+        app_ctx.console.print(
+            f"[dim]Skipped {media.path}: already taken {before:%Y-%m-%d %H:%M}[/dim]"
+        )
+        return
+
+    when = override or modification_time(media.path)
+    # Check the file can be dated before paying to hash it.
+    planned = write_date(media, when, dry_run=True)
+    uploaded = _uploaded_at(ledger, media.path)
+    change = planned if dry_run else write_date(media, when)
+
+    verb = "Would write" if dry_run else "Wrote"
+    origin = "given date" if override else "modification time"
+    line = f"{verb} {change.output} (taken {when:%Y-%m-%d %H:%M %z}, from the {origin}"
+    if before is not None:
+        line += f"; was {before:%Y-%m-%d %H:%M}"
+    app_ctx.console.print(line + ")", highlight=False)
+    if uploaded is not None:
+        app_ctx.console.print(
+            f"  [yellow]The original was uploaded to iCloud Photos on "
+            f"{uploaded}.[/yellow] Uploading the dated copy adds it as a new "
+            f"item; delete the old one in Photos."
+        )
+
+
 def _uploaded_at(ledger: Ledger, path: Path) -> str | None:
     """Return when the ledger says this exact content was uploaded, if ever.
 
     The stat cache answers for a path an upload run has already seen;
     anything else is hashed, so a file uploaded from another path or after a
     rename is still recognised.
+
+    Raises:
+        OSError: The file could not be read.
     """
-    try:
-        stat = path.stat()
-        digest = ledger.cached_hash(path, stat.st_size, stat.st_mtime_ns)
-        record = ledger.lookup(digest or hash_file(path))
-    except OSError as exc:
-        raise RotationError(str(exc), retryable=False) from exc
+    stat = path.stat()
+    digest = ledger.cached_hash(path, stat.st_size, stat.st_mtime_ns)
+    record = ledger.lookup(digest or hash_file(path))
     return None if record is None else f"{record.uploaded_at:%Y-%m-%d}"

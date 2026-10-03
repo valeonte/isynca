@@ -35,6 +35,7 @@ pixi run isynca photos upload ~/Media
 | `isynca ledger forget PATH` | Drop one file's record so it uploads again |
 | `isynca ledger prune` | Remove cache rows for files that no longer exist |
 | `isynca media check SRC...` | Show what files hold and whether iCloud Photos will take them |
+| `isynca media fix-date SRC... [--date D]` | Write a dated copy of files with no date taken |
 | `isynca media rotate FILE... --clockwise N` | Write an upright copy of sideways videos, losslessly |
 
 ## Signing in once
@@ -326,6 +327,36 @@ uploaded.
 
 Videos are read with `ffprobe`, which comes with ffmpeg
 (`sudo apt install ffmpeg`); images need nothing extra.
+
+## Giving undated files a date
+
+A file with no date taken inside it lands in iCloud Photos on the day it was
+uploaded. `media fix-date` writes a dated copy beside it as `NAME_dated.EXT`:
+
+```bash
+isynca media fix-date Scans/                     # every undated file, from its modification time
+isynca media fix-date --date 2009-07-20T15:30 "Scans/beach.jpg"
+isynca media fix-date --date 2009-07-20T15:30+03:00 "Scans/beach.jpg"
+```
+
+Without `--date`, each file's modification time is written, and files that
+already have a date taken are skipped. `--date` writes the given date instead,
+replacing any existing one, and takes a single file only -- one date across a
+folder is never what anyone means. A date with no offset is read as local
+time.
+
+Like `rotate`, nothing is re-encoded and the original is not modified:
+
+* **JPEG** gets `DateTimeOriginal`, `DateTimeDigitized` and their timezone
+  offsets in EXIF. Only the EXIF block is rewritten; the image data is copied
+  byte for byte.
+* **MP4, MOV, M4V and 3GP** get the creation time in their movie and track
+  headers overwritten in place. These headers hold dates from 1904 to 2040.
+  A video that already carries Apple's own capture date is refused, since
+  that date would win over the one written here.
+
+Other formats are refused. An AVI cannot carry a date iCloud reads, and
+iCloud does not take AVI in the first place, so it has to be converted first.
 
 ## Rotating sideways videos
 

@@ -1,9 +1,12 @@
+import os
 from datetime import UTC, datetime
 
 import pytest
+from PIL import Image
 
 from isynca.ledger.hashing import hash_file
 from isynca.ledger.store import Ledger, UploadStatus
+from isynca.media.dating import dated_path, modification_time
 from isynca.media.rotate import read_rotation
 from tests.media.conftest import box, mvhd, trak
 
@@ -203,3 +206,94 @@ def test_check_honours_the_kind_switches(invoke, tmp_path, make_image):
     make_image("photo.jpg")
     result = invoke("media", "check", "--no-images", str(tmp_path))
     assert "No media found." in result.output
+
+
+# --- fix-date ----------------------------------------------------------------
+
+
+def exif_taken(path):
+    with Image.open(path) as image:
+        return image.getexif().get_ifd(0x8769).get(0x9003)
+
+
+def test_fix_date_stamps_undated_files_from_their_modification_time(
+    invoke, tmp_path, make_image
+):
+    undated = make_image("album/scan.jpg")
+    os.utime(undated, (1_248_093_005, 1_248_093_005))
+    make_image("album/phone.jpg", original="2023:07:14 12:34:56")
+    (tmp_path / "album" / "old.avi").write_bytes(b"RIFF")
+
+    result = invoke("media", "fix-date", str(tmp_path / "album"))
+    assert result.exit_code == 1, result.output
+    expected = modification_time(undated)
+    assert (
+        f"Wrote {dated_path(undated)} (taken {expected:%Y-%m-%d %H:%M %z}, "
+        f"from the modification time)" in result.output
+    )
+    assert exif_taken(dated_path(undated)) == f"{expected:%Y:%m:%d %H:%M:%S}"
+    assert "Skipped" in result.output
+    assert "already taken 2023-07-14 12:34" in result.output
+    assert not (tmp_path / "album" / "phone_dated.jpg").exists()
+    assert "Cannot date" in result.output
+    assert "has to be converted first" in result.output
+
+
+def test_fix_date_dry_run_writes_nothing(invoke, tmp_path, make_image):
+    path = make_image("scan.jpg")
+    result = invoke("media", "fix-date", "--dry-run", str(path))
+    assert result.exit_code == 0, result.output
+    assert "Would write" in result.output
+    assert not dated_path(path).exists()
+
+
+def test_fix_date_writes_a_given_date_over_an_existing_one(
+    invoke, tmp_path, make_image
+):
+    path = make_image("wrong.jpg", original="2001:01:01 00:00:00")
+    result = invoke("media", "fix-date", "--date", "2009-07-20T15:30+03:00", str(path))
+    assert result.exit_code == 0, result.output
+    assert (
+        "(taken 2009-07-20 15:30 +0300, from the given date; was 2001-01-01 00:00)"
+        in result.output
+    )
+    assert exif_taken(dated_path(path)) == "2009:07:20 15:30:00"
+
+
+def test_fix_date_reads_an_unzoned_date_as_local_wall_time(
+    invoke, tmp_path, make_image
+):
+    path = make_image("scan.jpg")
+    result = invoke("media", "fix-date", "--date", "2009-07-20T15:30", str(path))
+    assert result.exit_code == 0, result.output
+    assert exif_taken(dated_path(path)) == "2009:07:20 15:30:00"
+
+
+def test_fix_date_refuses_a_date_for_more_than_one_file(invoke, tmp_path, make_image):
+    make_image("a.jpg")
+    result = invoke("media", "fix-date", "--date", "2009-07-20", str(tmp_path))
+    assert result.exit_code == 2
+    assert "takes exactly one file" in result.output
+
+
+def test_fix_date_refuses_an_unreadable_date(invoke, tmp_path, make_image):
+    path = make_image("a.jpg")
+    result = invoke("media", "fix-date", "--date", "last summer", str(path))
+    assert result.exit_code == 2
+    assert "expected a date like" in result.output
+
+
+def test_fix_date_with_nothing_to_date(invoke, tmp_path):
+    result = invoke("media", "fix-date", str(tmp_path))
+    assert result.exit_code == 0
+    assert "No media found." in result.output
+
+
+def test_fix_date_warns_when_the_original_is_already_in_icloud(
+    invoke, tmp_path, make_image, data_dir
+):
+    path = make_image("scan.jpg")
+    seed_upload(data_dir, path, hash_file(path))
+    result = invoke("media", "fix-date", str(path))
+    assert result.exit_code == 0, result.output
+    assert "The original was uploaded to iCloud Photos on 2025-06-07" in result.output

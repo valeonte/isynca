@@ -64,6 +64,14 @@ class UploadError(ItemError):
     """Uploading one file to iCloud failed."""
 
 
+class DateError(ItemError):
+    """A date taken could not be written into one file.
+
+    Always raised with ``retryable=False``: an unsupported format or an
+    out-of-range date will be just as unwritable on the next attempt.
+    """
+
+
 class ToolMissingError(FatalError):
     """An external program isynca relies on, such as ffprobe, is not installed."""
 

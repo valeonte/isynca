@@ -136,7 +136,7 @@ def _read_creationdate(
     return None
 
 
-def _apple_creation_date(handle: BinaryIO, start: int, end: int) -> datetime | None:
+def apple_creation_date(handle: BinaryIO, start: int, end: int) -> datetime | None:
     """Return Apple's QuickTime creation date from a ``moov`` box."""
     meta = find_box(handle, start, end, b"meta")
     if meta is None:
@@ -203,7 +203,7 @@ def read_container_date(path: Path) -> datetime | None:
             moov = find_box(handle, 0, size, b"moov")
             if moov is None:
                 return None
-            return _apple_creation_date(handle, *moov) or _mvhd_creation_date(
+            return apple_creation_date(handle, *moov) or _mvhd_creation_date(
                 handle, *moov
             )
     except OSError as exc:
