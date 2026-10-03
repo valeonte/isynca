@@ -34,6 +34,7 @@ pixi run isynca photos upload ~/Media
 | `isynca ledger list` | List recorded uploads |
 | `isynca ledger forget PATH` | Drop one file's record so it uploads again |
 | `isynca ledger prune` | Remove cache rows for files that no longer exist |
+| `isynca media check SRC...` | Show what files hold and whether iCloud Photos will take them |
 | `isynca media rotate FILE... --clockwise N` | Write an upright copy of sideways videos, losslessly |
 
 ## Signing in once
@@ -287,6 +288,44 @@ isynca files put notes.md --to Notes
 `files list` shows the raw node type alongside each entry, which is how the
 app-library and scratch-folder behaviour above was established in the first
 place.
+
+## Checking media before uploading
+
+`media check` reports what each file really holds -- container, codecs,
+size, date taken -- and guesses how iCloud Photos will treat it:
+
+```bash
+isynca media check "Videos/2009Ntafy Xrisoula/SSL12779.AVI"
+```
+
+```
+convert    Videos/2009Ntafy Xrisoula/SSL12779.AVI
+  AVI · mpeg4 (Advanced Simple Profile) · mp2 · 640x480 · no date taken
+  - AVI is not taken; iCloud wants MP4 or MOV
+  - MPEG-4 Part 2 video in Advanced Simple Profile (XviD/DivX style) does not play on Apple devices
+  - mp2 audio does not play on Apple devices
+```
+
+It takes folders too, with the same `--no-videos`, `--no-images` and
+`--exclude` switches as `photos scan`. Each file gets one of four verdicts:
+
+| Verdict | Meaning |
+| --- | --- |
+| `ok` | MP4/MOV with H.264, HEVC or ProRes; JPEG, HEIC, PNG, GIF, TIFF, WebP |
+| `unsure` | Plays on some Apple devices only: Motion JPEG, H.263, MPEG-4 Simple Profile, AMR audio, AVIF, RAW |
+| `convert` | Will not be taken or will not play: AVI, MPG, WMV, MKV, XviD/DivX, MPEG-1/2 |
+| `unreadable` | Damaged, or not what its name says -- such as a JPEG thumbnail saved as `.MOV` |
+
+The verdicts are informed guesses, not Apple's word: an upload that iCloud
+accepts can still fail to play. The quickest way to settle an `unsure` file is
+to upload one and look at it on a phone.
+
+Files with no date taken inside them are counted too. iCloud dates an upload
+from its metadata, so those will most likely appear under the day they were
+uploaded.
+
+Videos are read with `ffprobe`, which comes with ffmpeg
+(`sudo apt install ffmpeg`); images need nothing extra.
 
 ## Rotating sideways videos
 

@@ -70,6 +70,7 @@ ignore = [
 # EXIF timestamps carry no timezone, so the expected values here are naive on
 # purpose -- that is exactly what these assertions are checking.
 "tests/media/test_capture.py" = ["DTZ001"]
+"tests/media/test_probe.py" = ["DTZ001"]
 # Test stubs routinely accept arguments they ignore; that is the point of a
 # stub, not an oversight.
 "tests/*" = [

@@ -1,19 +1,132 @@
-"""``isynca media`` -- fix up local media files; nothing here talks to iCloud."""
+"""``isynca media`` -- check and fix up local media files, never touching iCloud."""
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from isynca.cli.context import AppContext, get_context
+from isynca.cli.photos import (
+    ExcludeOpt,
+    ImagesOpt,
+    SourceArg,
+    SymlinksOpt,
+    VideosOpt,
+    build_scanner,
+)
 from isynca.errors import RotationError
 from isynca.ledger.hashing import hash_file
 from isynca.ledger.store import Ledger
+from isynca.media.compat import Assessment, Verdict, assess, container_name
+from isynca.media.probe import MediaInfo, probe
 from isynca.media.rotate import QUARTER_TURNS, rotate_video
+from isynca.media.types import MediaKind
 
-app = typer.Typer(help="Fix up local media files.", no_args_is_help=True)
+app = typer.Typer(help="Check and fix up local media files.", no_args_is_help=True)
+
+_VERDICT_LABELS: dict[Verdict, str] = {
+    Verdict.OK: "[green]ok        [/green]",
+    Verdict.UNSURE: "[yellow]unsure    [/yellow]",
+    Verdict.CONVERT: "[red]convert   [/red]",
+    Verdict.UNREADABLE: "[bold red]unreadable[/bold red]",
+}
+"""Padded to one width so the paths after them line up."""
+
+
+@app.command("check")
+def check(
+    ctx: typer.Context,
+    sources: SourceArg,
+    videos: VideosOpt = None,
+    images: ImagesOpt = None,
+    exclude: ExcludeOpt = None,
+    follow_symlinks: SymlinksOpt = False,
+) -> None:
+    """Show what each file holds and whether iCloud Photos is likely to take it.
+
+    Reads the format, codecs, size and date taken of each file, then judges
+    it: ok, unsure, convert, or unreadable, with the reasons. Nothing is
+    changed and nothing is sent anywhere. Videos need ffprobe, from ffmpeg.
+    """
+    app_ctx = get_context(ctx)
+    config = app_ctx.config.with_overrides(
+        videos=videos,
+        images=images,
+        exclude=tuple(exclude) if exclude else None,
+        follow_symlinks=follow_symlinks or None,
+    )
+    scanner = build_scanner(config)
+
+    verdicts: Counter[Verdict] = Counter()
+    undated = 0
+    # The spinner shares the logging console, so a warning raised mid-scan
+    # lands above it rather than through it.
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=app_ctx.err_console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Checking...", total=None)
+        for media in scanner.scan(sources):
+            info = probe(media)
+            assessment = assess(info)
+            verdicts[assessment.verdict] += 1
+            undated += assessment.verdict is not Verdict.UNREADABLE and not info.taken
+            _print_file(app_ctx.console, info, assessment)
+            progress.update(task, description=f"Checked {verdicts.total()} file(s)...")
+
+    if not verdicts:
+        app_ctx.console.print("No media found.")
+        return
+    app_ctx.console.print(
+        f"{verdicts.total()} file(s): {verdicts[Verdict.OK]} ok, "
+        f"{verdicts[Verdict.UNSURE]} unsure, {verdicts[Verdict.CONVERT]} to "
+        f"convert, {verdicts[Verdict.UNREADABLE]} unreadable."
+    )
+    if undated:
+        app_ctx.console.print(
+            f"{undated} file(s) carry no date taken; iCloud will most likely "
+            f"file them under the day they are uploaded."
+        )
+
+
+def _print_file(console: Console, info: MediaInfo, assessment: Assessment) -> None:
+    """Print one checked file: verdict and path, then what it holds and why.
+
+    A block per file rather than a table row: paths and reasons are long, and
+    a table folds them into narrow columns that are hard to read.
+    """
+    console.print(f"{_VERDICT_LABELS[assessment.verdict]} {info.media.path}")
+    if info.error is None:
+        console.print(f"  {_describe(info)}", highlight=False)
+    for reason in assessment.reasons:
+        console.print(f"  [dim]-[/dim] {reason}", highlight=False)
+
+
+def _describe(info: MediaInfo) -> str:
+    """Return a one-line summary of format, size and date taken."""
+    parts = [container_name(info)]
+    if info.media.kind is MediaKind.VIDEO:
+        video = info.video_codec or "no video"
+        if info.video_profile:
+            video += f" ({info.video_profile})"
+        parts.append(video)
+        parts.append(info.audio_codec or "no audio")
+    if info.width and info.height:
+        size = f"{info.width}x{info.height}"
+        parts.append(f"{size} turned {info.rotation}°" if info.rotation else size)
+    parts.append(
+        f"taken {info.taken:%Y-%m-%d %H:%M}"
+        if info.taken
+        else "[red]no date taken[/red]"
+    )
+    return " · ".join(parts)
 
 
 @app.command("rotate")

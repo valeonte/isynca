@@ -64,6 +64,10 @@ class UploadError(ItemError):
     """Uploading one file to iCloud failed."""
 
 
+class ToolMissingError(FatalError):
+    """An external program isynca relies on, such as ffprobe, is not installed."""
+
+
 class AlbumNotFoundError(FatalError):
     """The requested album does not exist and could not be created."""
 
