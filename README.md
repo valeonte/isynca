@@ -314,8 +314,8 @@ It takes folders too, with the same `--no-videos`, `--no-images` and
 | Verdict | Meaning |
 | --- | --- |
 | `ok` | MP4/MOV with H.264, HEVC or ProRes; JPEG, HEIC, PNG, GIF, TIFF, WebP |
-| `unsure` | Plays on some Apple devices only: Motion JPEG, H.263, MPEG-4 Simple Profile, AMR audio, AVIF, RAW |
-| `convert` | Will not be taken or will not play: AVI, MPG, WMV, MKV, XviD/DivX, MPEG-1/2, and H.264 carrying the colour tags old Motion JPEG cameras write |
+| `unsure` | Plays on some Apple devices only: H.263, DV, AV1, 8-bit PCM audio, AVIF, RAW |
+| `convert` | Will not be taken or will not play: AVI, MPG, WMV, MKV, XviD/DivX, MPEG-1/2, Motion JPEG, MPEG-4 Part 2, AMR audio, and H.264 carrying the colour tags old Motion JPEG cameras write |
 | `unreadable` | Damaged, or not what its name says -- such as a JPEG thumbnail saved as `.MOV` |
 
 The verdicts are informed guesses, not Apple's word: an upload that iCloud
@@ -350,7 +350,7 @@ isynca media fix Videos/
   its modification time.
 * **Files that need no converting** but have no date taken get a dated copy,
   `NAME_dated.EXT`, exactly as `fix-date` would write it.
-* **Unsure files** (Motion JPEG, early phone video) are only dated.
+* **Unsure files** (H.263, DV or AV1 video, 8-bit PCM audio) are only dated.
   `--convert-unsure` converts them too.
 * **Unreadable files** are reported and left alone.
 

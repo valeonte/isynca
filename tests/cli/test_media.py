@@ -313,11 +313,25 @@ def utc(monkeypatch):
     time.tzset()
 
 
+ISO_BMFF = "mov,mp4,m4a,3gp,3g2,mj2"
 MJPEG_MOV = {
-    "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "4.0"},
+    "format": {"format_name": ISO_BMFF, "duration": "4.0"},
     "streams": [
-        {"codec_type": "video", "codec_name": "mjpeg", "width": 320, "height": 240},
+        {
+            "codec_type": "video",
+            "codec_name": "mjpeg",
+            "width": 320,
+            "height": 240,
+            "color_space": "bt470bg",
+        },
         {"codec_type": "audio", "codec_name": "pcm_u8"},
+    ],
+}
+H263_3GP = {
+    "format": {"format_name": ISO_BMFF, "duration": "4.0"},
+    "streams": [
+        {"codec_type": "video", "codec_name": "h263", "width": 176, "height": 144},
+        {"codec_type": "audio", "codec_name": "aac"},
     ],
 }
 
@@ -386,21 +400,36 @@ def test_fix_reruns_skip_what_is_done(invoke, fix_folder):
 def test_fix_only_dates_unsure_files_unless_asked(
     invoke, tmp_path, ffprobe_reports, ffmpeg
 ):
-    clip = tmp_path / "P8080017.MOV"
-    clip.write_bytes(box(b"ftyp", b"qt  ") + box(b"moov", mvhd(0) + trak()))
-    ffprobe_reports({"P8080017.MOV": MJPEG_MOV})
+    clip = tmp_path / "phone.3gp"
+    clip.write_bytes(box(b"ftyp", b"3gp4") + box(b"moov", mvhd(0) + trak()))
+    ffprobe_reports({"phone.3gp": H263_3GP})
     ffmpeg()
 
     result = invoke("media", "fix", str(clip))
     assert result.exit_code == 0, result.output
-    assert f"Wrote {tmp_path / 'P8080017_dated.MOV'}" in result.output
+    assert f"Wrote {tmp_path / 'phone_dated.3gp'}" in result.output
     assert "Not converted, though it may not play everywhere" in result.output
-    assert "Motion JPEG video" in result.output
+    assert "H.263 video" in result.output
 
     result = invoke("media", "fix", "--convert-unsure", str(clip))
     assert result.exit_code == 0, result.output
     assert "Converted" in result.output
-    assert (tmp_path / "P8080017_converted.mp4").exists()
+    assert (tmp_path / "phone_converted.mp4").exists()
+
+
+def test_fix_converts_motion_jpeg_without_being_asked(
+    invoke, tmp_path, ffprobe_reports, ffmpeg
+):
+    clip = tmp_path / "P7020700.MOV"
+    clip.write_bytes(box(b"ftyp", b"qt  ") + box(b"moov", mvhd(0) + trak()))
+    ffprobe_reports({"P7020700.MOV": MJPEG_MOV})
+    instances = ffmpeg()
+
+    result = invoke("media", "fix", str(clip))
+    assert result.exit_code == 0, result.output
+    assert f"Converted {clip} → P7020700_converted.mp4" in result.output
+    command = instances[0].command
+    assert command[command.index("-colorspace") + 1] == "smpte170m"
 
 
 def test_fix_reports_copied_streams(invoke, tmp_path, ffprobe_reports, ffmpeg):
