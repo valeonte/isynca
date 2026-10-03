@@ -134,15 +134,41 @@ def test_tags_untagged_sd_video_as_bt601(avi):
     assert colours(command) == ("smpte170m", "smpte170m", "smpte170m")
 
 
-def test_fills_in_only_what_is_missing(avi):
+def test_replaces_an_incomplete_description_with_one_standard(avi):
     info = xvid(avi, color_matrix="bt709", color_primaries="bt470bg", height=480)
     command = _ffmpeg_command(info, avi, datetime.now(UTC))
-    assert colours(command) == ("bt709", "bt470bg", "bt709")
+    assert colours(command) == ("bt709", "bt709", "bt709")
+
+
+def test_replaces_the_nikon_description_with_bt601(avi):
+    """bt470m is ffprobe's name; ffmpeg would not even accept it back."""
+    info = xvid(
+        avi,
+        video_codec="h264",
+        video_profile="High",
+        color_matrix="bt470bg",
+        color_transfer="bt470m",
+        height=1080,
+    )
+    command = _ffmpeg_command(info, avi, datetime.now(UTC))
+    assert option(command, "-c:v") == "libx264"
+    assert colours(command) == ("smpte170m", "smpte170m", "smpte170m")
+
+
+def test_replaces_a_complete_description_with_an_unusual_transfer(avi):
+    info = xvid(
+        avi, color_matrix="bt470bg", color_primaries="bt470bg", color_transfer="bt470m"
+    )
+    command = _ffmpeg_command(info, avi, datetime.now(UTC))
+    assert colours(command) == ("smpte170m", "smpte170m", "smpte170m")
 
 
 def test_keeps_a_complete_colour_description(avi):
     info = xvid(
-        avi, color_matrix="bt470bg", color_primaries="bt470bg", color_transfer="gamma28"
+        avi,
+        color_matrix="bt470bg",
+        color_primaries="bt470bg",
+        color_transfer="smpte170m",
     )
     assert colours(_ffmpeg_command(info, avi, datetime.now(UTC))) is None
 

@@ -55,6 +55,8 @@ _X264 = ("-c:v", "libx264", "-preset", "slow", "-crf", "18", "-pix_fmt", "yuv420
 _AAC = ("-c:a", "aac", "-b:a", "128k")
 _EVEN_SIZE = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
 _HD_HEIGHT = 720
+_TRANSFERS_KEPT = frozenset({"bt709", "smpte170m", "arib-std-b67"})
+"""Transfer characteristics seen among accepted uploads: SDR and Apple's HLG."""
 
 Progress = Callable[[float], None]
 """Called with the fraction of a video converted so far, from 0 to 1."""
@@ -149,35 +151,31 @@ def _copies_video(info: MediaInfo) -> bool:
 
 
 def _colour_options(info: MediaInfo) -> list[str]:
-    """Return options giving a re-encode a complete colour description.
+    """Return options giving a re-encode a colour description iCloud takes.
 
-    An encoder copies whatever description the source had, and a partial one
-    can get the file refused by iCloud (see
+    An encoder copies whatever description the source had, and odd ones get
+    the file refused by iCloud (see
     :func:`isynca.media.compat.has_rejected_colours`). A complete description
-    is kept as it is. Anything less is filled in with the standard for the
-    frame size -- BT.601 below 720 lines, BT.709 from there up -- which is
-    what players assume of untagged video anyway, so no colour changes. A
-    bt470bg matrix becomes smpte170m: the same BT.601 coefficients, under
-    the name that matches the primaries and transfer written beside it.
+    whose transfer is one accepted uploads use is kept as it is. Anything
+    else is replaced by one standard throughout: BT.709 for a bt709 matrix,
+    or for untagged video of 720 lines and up, and BT.601 (smpte170m)
+    otherwise -- what players assume of untagged video anyway, so no colour
+    changes. Only those two names are ever passed on, because ffprobe and
+    ffmpeg disagree on what to call some of the others.
     """
-    if info.color_matrix and info.color_primaries and info.color_transfer:
+    complete = info.color_matrix and info.color_primaries and info.color_transfer
+    if complete and info.color_transfer in _TRANSFERS_KEPT:
         return []
     hd = (info.height or 0) >= _HD_HEIGHT
-    standard = (
-        "bt709"
-        if info.color_matrix == "bt709" or (info.color_matrix is None and hd)
-        else "smpte170m"
-    )
-    matrix = (
-        info.color_matrix if info.color_matrix not in (None, "bt470bg") else standard
-    )
+    bt709 = info.color_matrix == "bt709" or (info.color_matrix is None and hd)
+    standard = "bt709" if bt709 else "smpte170m"
     return [
         "-colorspace",
-        matrix,
+        standard,
         "-color_primaries",
-        info.color_primaries or standard,
+        standard,
         "-color_trc",
-        info.color_transfer or standard,
+        standard,
     ]
 
 

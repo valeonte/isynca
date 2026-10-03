@@ -17,9 +17,9 @@ known to decode:
   early cameras is doubtful. AMR phone audio is refused -- it came in the
   same rejected 3GPs, and no accepted upload carries it. Anything else is not
   decoded.
-* **Colour.** A bt470bg matrix with no primaries or transfer -- what old
-  Motion JPEG cameras write -- makes iCloud refuse the file outright, so
-  H.264 or HEVC carrying it has to be re-encoded.
+* **Colour.** H.264 tagged with a bt470bg matrix but no primaries -- from
+  old Motion JPEG cameras via a re-encode, or straight from a Nikon DSLR --
+  is refused outright, so it has to be re-encoded.
 * **Images.** JPEG, HEIF, PNG, GIF, TIFF and WebP. AVIF needs a recent device
   and RAW support depends on the camera model.
 
@@ -194,8 +194,8 @@ def judge_video_stream(info: MediaInfo) -> tuple[Verdict, str]:
     if codec in _PROFILES_OK and has_rejected_colours(info):
         return (
             Verdict.CONVERT,
-            "its colour description names a bt470bg matrix but no primaries or "
-            "transfer, which iCloud refuses to transcode",
+            "its colour description names a bt470bg matrix but no primaries, "
+            "the mark of camera video iCloud refuses to transcode",
         )
     if codec is not None and (codec in _PROFILES_OK or codec == "mpeg4"):
         return _judge_profile(codec, info.video_profile)
@@ -209,20 +209,19 @@ def judge_video_stream(info: MediaInfo) -> tuple[Verdict, str]:
 
 
 def has_rejected_colours(info: MediaInfo) -> bool:
-    """Return whether the video's colour description is one iCloud rejects.
+    """Return whether the video carries the colour marks of refused uploads.
 
-    Old cameras recording Motion JPEG mark the matrix as bt470bg and leave
-    primaries and transfer unset, and a re-encode inherits that. iCloud
-    answers such a file with 415 "unsupported for transcoding"; the same
-    video with a complete description, or none at all, goes through. Other
-    half-filled descriptions are seen among accepted uploads, so only this
-    one is singled out.
+    Two kinds of file iCloud answered with 415 "unsupported for transcoding"
+    share a bt470bg matrix with no primaries: H.264 re-encoded from old
+    Motion JPEG cameras, which leave transfer unset too, and Nikon DSLR
+    video, which tags transfer as bt470m. Among several thousand accepted
+    uploads a bt470bg matrix always comes with its primaries.
+
+    The tags are a marker more than the cause. Correcting them is enough for
+    a re-encode, but a Nikon stream copied with corrected tags is refused all
+    the same, so a stream carrying them is re-encoded, never copied.
     """
-    return (
-        info.color_matrix == "bt470bg"
-        and info.color_primaries is None
-        and info.color_transfer is None
-    )
+    return info.color_matrix == "bt470bg" and info.color_primaries is None
 
 
 def _judge_profile(codec: str, profile: str | None) -> tuple[Verdict, str]:
