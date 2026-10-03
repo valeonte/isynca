@@ -373,6 +373,34 @@ camera video. Needs ffmpeg.
 The new files sit beside the originals, so upload only the fixed ones -- or
 move the originals elsewhere first.
 
+## Dates from file names
+
+Some recorders never write a date into the file but put it in the name, and
+copying the files around has long since replaced their modification times.
+`--date-from-name` reads the date from the name instead, on both `fix` and
+`fix-date`:
+
+```bash
+# capture3.06-06-30_20-47.00.avi was taken on 30 June 2006 at 20:47 in Greece
+isynca media fix --date-from-name '%y-%m-%d_%H-%M.%S' --timezone Europe/Athens Videos/Shakira/
+```
+
+The pattern uses strftime's numeric directives -- `%Y %y %m %d %H %M %S`,
+with `%%` for a literal percent sign -- and needs at least a year, a month
+and a day. It is looked for anywhere in the name, so the `capture3.` around
+it need not be spelt out.
+
+It only stands in for the modification time: a file that has a date of its
+own keeps it. A file whose name does not match is reported rather than given
+the modification time, since the pattern was asked for because those are
+wrong.
+
+A name carries no timezone. `--timezone` takes a zone name such as
+`Europe/Athens`, which gets daylight saving right for each date, or a fixed
+offset such as `+03:00`; without it, this machine's zone is used. It also
+applies to a `--date` given without an offset. `--date` and
+`--date-from-name` cannot be combined.
+
 ## Giving undated files a date
 
 A file with no date taken inside it lands in iCloud Photos on the day it was

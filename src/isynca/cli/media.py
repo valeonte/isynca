@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, tzinfo
 from pathlib import Path
 from typing import Annotated
 
@@ -32,13 +32,19 @@ from isynca.ledger.hashing import hash_file
 from isynca.ledger.store import Ledger
 from isynca.media.capture import read_capture_date
 from isynca.media.compat import Assessment, Verdict, assess, container_name
-from isynca.media.convert import CONVERTED_SUFFIX, convert, converted_path
+from isynca.media.convert import (
+    CONVERTED_SUFFIX,
+    Conversion,
+    convert,
+    converted_path,
+)
 from isynca.media.dating import (
     DATED_SUFFIX,
     dated_path,
     modification_time,
     write_date,
 )
+from isynca.media.naming import NamePattern, parse_timezone
 from isynca.media.probe import MediaInfo, probe
 from isynca.media.rotate import QUARTER_TURNS, rotate_video
 from isynca.media.types import MediaFile, MediaKind
@@ -52,6 +58,31 @@ _VERDICT_LABELS: dict[Verdict, str] = {
     Verdict.UNREADABLE: "[bold red]unreadable[/bold red]",
 }
 """Padded to one width so the paths after them line up."""
+
+DateFromNameOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--date-from-name",
+        help=(
+            "For files with no date taken, read it from the file name by this "
+            "pattern instead of using the modification time, e.g. "
+            "'%y-%m-%d_%H-%M.%S'."
+        ),
+        show_default=False,
+    ),
+]
+TimezoneOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--timezone",
+        help=(
+            "Zone for dates that carry none -- from --date-from-name, or a "
+            "--date without an offset -- e.g. Europe/Athens or +03:00. "
+            "Defaults to this machine's."
+        ),
+        show_default=False,
+    ),
+]
 
 
 @app.command("check")
@@ -227,6 +258,8 @@ def fix_date(
             show_default=False,
         ),
     ] = None,
+    date_from_name: DateFromNameOpt = None,
+    timezone: TimezoneOpt = None,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Show what would be written, writing nothing."),
@@ -239,8 +272,13 @@ def fix_date(
     instead, replacing any existing one, and takes a single file. Each copy
     goes beside its original as NAME_dated.EXT; the original is left
     untouched. Works on JPEG images and MP4/MOV/3GP videos, losslessly.
+
+    --date-from-name reads the date of undated files from their names
+    instead of using the modification time, e.g. '%y-%m-%d_%H-%M.%S' for
+    capture3.06-06-30_20-47.00.avi; a file whose name does not match is
+    reported. --timezone says which zone such dates are in.
     """
-    override = _parse_override(date, sources) if date is not None else None
+    override, names = _date_options(date, date_from_name, timezone, sources)
     app_ctx = get_context(ctx)
     scanner = build_scanner(app_ctx.config)
 
@@ -250,7 +288,7 @@ def fix_date(
         for media in scanner.scan(sources):
             seen = True
             try:
-                _fix_one(app_ctx, ledger, media, override, dry_run)
+                _fix_one(app_ctx, ledger, media, override, dry_run, names)
             except (DateError, OSError) as exc:
                 app_ctx.err_console.print(f"[red]Cannot date {media.path}:[/red] {exc}")
                 failed = True
@@ -260,8 +298,42 @@ def fix_date(
         raise typer.Exit(code=1)
 
 
-def _parse_override(text: str, sources: list[Path]) -> datetime:
-    """Return the ``--date`` value as an aware datetime, local if unzoned.
+def _date_options(
+    date: str | None,
+    date_from_name: str | None,
+    timezone: str | None,
+    sources: list[Path],
+) -> tuple[datetime | None, NamePattern | None]:
+    """Return the explicit date and the name pattern the options ask for."""
+    if date is not None and date_from_name is not None:
+        raise typer.BadParameter(
+            "cannot be combined with --date", param_hint="--date-from-name"
+        )
+    zone = None
+    if timezone is not None:
+        if date is None and date_from_name is None:
+            raise typer.BadParameter(
+                "only applies with --date or --date-from-name", param_hint="--timezone"
+            )
+        try:
+            zone = parse_timezone(timezone)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--timezone") from exc
+
+    override = _parse_override(date, sources, zone) if date is not None else None
+    names = None
+    if date_from_name is not None:
+        try:
+            names = NamePattern.parse(date_from_name, zone)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--date-from-name") from exc
+    return override, names
+
+
+def _parse_override(
+    text: str, sources: list[Path], zone: tzinfo | None = None
+) -> datetime:
+    """Return the ``--date`` value as an aware datetime, in ``zone`` if unzoned.
 
     One date for many files would stamp a whole folder with the same moment,
     which is never what anyone means, so it is refused outright.
@@ -275,7 +347,9 @@ def _parse_override(text: str, sources: list[Path]) -> datetime:
             "expected a date like 2009-07-20T15:30 or 2009-07-20T15:30+03:00",
             param_hint="--date",
         ) from exc
-    return when if when.tzinfo is not None else when.astimezone()
+    if when.tzinfo is not None:
+        return when
+    return when.replace(tzinfo=zone) if zone is not None else when.astimezone()
 
 
 def _fix_one(
@@ -284,6 +358,7 @@ def _fix_one(
     media: MediaFile,
     override: datetime | None,
     dry_run: bool,
+    names: NamePattern | None = None,
 ) -> None:
     """Date one file and report it, warning if iCloud holds the undated version."""
     before = read_capture_date(media)
@@ -293,14 +368,14 @@ def _fix_one(
         )
         return
 
-    when = override or modification_time(media.path)
+    when = override or _fallback_date(media, names)
     # Check the file can be dated before paying to hash it.
     planned = write_date(media, when, dry_run=True)
     uploaded = _uploaded_at(ledger, media.path)
     change = planned if dry_run else write_date(media, when)
 
     verb = "Would write" if dry_run else "Wrote"
-    origin = "given date" if override else "modification time"
+    origin = "given date" if override else "name" if names else "modification time"
     line = f"{verb} {change.output} (taken {when:%Y-%m-%d %H:%M %z}, from the {origin}"
     if before is not None:
         line += f"; was {_local(before)}"
@@ -335,6 +410,8 @@ def fix(
             show_default=False,
         ),
     ] = None,
+    date_from_name: DateFromNameOpt = None,
+    timezone: TimezoneOpt = None,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Show what would be written, writing nothing."),
@@ -352,8 +429,11 @@ def fix(
 
     --date takes a single file and gives its result that date instead,
     replacing any date it already has, whether it is converted or only dated.
+
+    --date-from-name reads the date of files that have none from their names
+    instead of using the modification time, as with fix-date.
     """
-    override = _parse_override(date, sources) if date is not None else None
+    override, names = _date_options(date, date_from_name, timezone, sources)
     app_ctx = get_context(ctx)
     scanner = build_scanner(app_ctx.config)
 
@@ -363,7 +443,9 @@ def fix(
         for media in scanner.scan(sources):
             seen = True
             try:
-                _fix_media(app_ctx, ledger, media, convert_unsure, override, dry_run)
+                _fix_media(
+                    app_ctx, ledger, media, convert_unsure, override, names, dry_run
+                )
             except (ConvertError, DateError, OSError) as exc:
                 app_ctx.err_console.print(f"[red]Cannot fix {media.path}:[/red] {exc}")
                 failed = True
@@ -379,6 +461,7 @@ def _fix_media(
     media: MediaFile,
     convert_unsure: bool,
     override: datetime | None,
+    names: NamePattern | None,
     dry_run: bool,
 ) -> None:
     """Convert or date one file, whichever it needs, and report it.
@@ -404,7 +487,7 @@ def _fix_media(
         if not explicit and dated_path(media.path).exists():
             _skip(app_ctx, media, f"{dated_path(media.path).name} already exists")
             return
-        _fix_one(app_ctx, ledger, media, override, dry_run)
+        _fix_one(app_ctx, ledger, media, override, dry_run, names)
         if unsure:
             app_ctx.console.print(
                 f"  [yellow]Not converted, though it may not play everywhere:"
@@ -418,8 +501,10 @@ def _fix_media(
         _skip(app_ctx, media, f"{converted_path(media).name} already exists")
         return
 
+    named = override is None and names is not None and info.taken is None
+    date = _fallback_date(media, names) if named else override
     # Check the file can be converted before paying to hash it.
-    planned = convert(info, date=override, dry_run=True)
+    planned = convert(info, date=date, dry_run=True)
     uploaded = _uploaded_at(ledger, media.path)
     if dry_run:
         change = planned
@@ -436,28 +521,58 @@ def _fix_media(
             task = progress.add_task("convert", total=1.0)
             change = convert(
                 info,
-                date=override,
+                date=date,
                 on_progress=lambda done: progress.update(task, completed=done),
             )
 
-    verb = "Would convert" if dry_run else "Converted"
-    if explicit:
-        origin = "the given date"
-    else:
-        origin = "modification time" if change.dated_from_mtime else "its own date"
-    line = (
-        f"{verb} {media.path} → {change.output.name} "
-        f"(taken {_local(change.taken)}, from {origin}"
-    )
-    if change.copied:
-        line += f"; {' and '.join(change.copied)} copied as is"
-    app_ctx.console.print(line + ")", highlight=False)
+    origin = "the given date" if explicit else "its name" if named else None
+    _report_conversion(app_ctx, change, origin, dry_run)
     if uploaded is not None:
         app_ctx.console.print(
             f"  [yellow]The original was uploaded to iCloud Photos on "
             f"{uploaded}.[/yellow] Uploading the converted copy adds it as a "
             f"new item; delete the old one in Photos."
         )
+
+
+def _report_conversion(
+    app_ctx: AppContext, change: Conversion, origin: str | None, dry_run: bool
+) -> None:
+    """Print what a conversion did, or would do.
+
+    ``origin`` names where a supplied date came from. Such a date is shown in
+    its own zone, offset included -- an Athens time read from a name should
+    read as written, not shifted to this machine's clock.
+    """
+    if origin is None:
+        origin = "modification time" if change.dated_from_mtime else "its own date"
+        taken = _local(change.taken)
+    else:
+        taken = f"{change.taken:%Y-%m-%d %H:%M %z}"
+    verb = "Would convert" if dry_run else "Converted"
+    line = (
+        f"{verb} {change.source} → {change.output.name} (taken {taken}, from {origin}"
+    )
+    if change.copied:
+        line += f"; {' and '.join(change.copied)} copied as is"
+    app_ctx.console.print(line + ")", highlight=False)
+
+
+def _fallback_date(media: MediaFile, names: NamePattern | None) -> datetime:
+    """Return the date for a file that has none: from its name, or its mtime.
+
+    A pattern was given because the modification times are known to be
+    wrong, so a name it does not match is an error rather than a reason to
+    fall back to them.
+    """
+    if names is None:
+        return modification_time(media.path)
+    found = names.date_in(media.path)
+    if found is None:
+        raise DateError(
+            f"its name does not match the pattern {names.pattern!r}", retryable=False
+        )
+    return found
 
 
 def _skip(app_ctx: AppContext, media: MediaFile, why: str) -> None:

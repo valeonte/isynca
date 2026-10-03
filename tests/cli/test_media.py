@@ -476,7 +476,7 @@ def test_fix_gives_a_converted_file_the_given_date(invoke, fix_folder):
     result = invoke("media", "fix", "--date", "2009-07-20T15:30+03:00", str(avi))
     assert result.exit_code == 0, result.output
     assert (
-        f"Converted {avi} → SSL12779_converted.mp4 (taken 2009-07-20 12:30, "
+        f"Converted {avi} → SSL12779_converted.mp4 (taken 2009-07-20 15:30 +0300, "
         f"from the given date)" in result.output
     )
 
@@ -523,3 +523,113 @@ def test_fix_refuses_a_date_for_more_than_one_file(invoke, fix_folder, many):
     assert result.exit_code == 2
     assert "takes exactly one file" in result.output
     assert sorted(p.name for p in fix_folder.iterdir()) == before
+
+
+# --- dates from names --------------------------------------------------------
+
+CAPTURE = "%y-%m-%d_%H-%M.%S"
+
+
+def test_fix_date_reads_the_date_from_the_name(invoke, tmp_path, make_image):
+    path = make_image("scan.06-06-30_20-47.00.jpg")
+    result = invoke(
+        "media", "fix-date", "--date-from-name", CAPTURE,
+        "--timezone", "Europe/Athens", str(path),
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "(taken 2006-06-30 20:47 +0300, from the name)" in result.output
+    output = dated_path(path)
+    assert exif_taken(output) == "2006:06:30 20:47:00"
+    with Image.open(output) as image:
+        assert image.getexif().get_ifd(0x8769)[0x9011] == "+03:00"
+
+
+def test_fix_date_reports_a_name_that_does_not_match(invoke, tmp_path, make_image):
+    path = make_image("holiday.jpg")
+    result = invoke("media", "fix-date", "--date-from-name", CAPTURE, str(path))
+    assert result.exit_code == 1
+    assert "its name does not match the pattern" in result.output
+    assert not dated_path(path).exists()
+
+
+@pytest.fixture
+def capture_avi(tmp_path, ffprobe_reports):
+    """An undated XviD AVI named the way the capture software names them."""
+    path = tmp_path / "capture3.06-06-30_20-47.00.avi"
+    path.write_bytes(b"RIFF")
+    os.utime(path, (1_315_213_923, 1_315_213_923))  # the wrong 2011 mtime
+    ffprobe_reports({path.name: XVID_AVI})
+    return path
+
+
+def test_fix_converts_with_the_date_from_the_name(invoke, capture_avi, ffmpeg):
+    instances = ffmpeg()
+    result = invoke(
+        "media", "fix", "--date-from-name", CAPTURE,
+        "--timezone", "Europe/Athens", str(capture_avi),
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "(taken 2006-06-30 20:47 +0300, from its name)" in result.output
+    assert "creation_time=2006-06-30T17:47:00Z" in instances[0].command
+
+
+def test_fix_keeps_a_files_own_date_over_its_name(
+    invoke, tmp_path, ffprobe_reports, ffmpeg
+):
+    mkv = tmp_path / "clip.06-06-30_20-47.00.mkv"
+    mkv.write_bytes(b"x")
+    ffprobe_reports(
+        {
+            mkv.name: {
+                "format": {
+                    "format_name": "matroska,webm",
+                    "tags": {"creation_time": "2019-04-05T06:07:08Z"},
+                },
+                "streams": [{"codec_type": "video", "codec_name": "vp9"}],
+            }
+        }
+    )
+    ffmpeg()
+    result = invoke("media", "fix", "--date-from-name", CAPTURE, str(mkv))
+    assert result.exit_code == 0, result.output
+    assert "(taken 2019-04-05 06:07, from its own date)" in result.output
+
+
+def test_fix_reports_a_name_that_does_not_match(
+    invoke, tmp_path, ffprobe_reports, ffmpeg
+):
+    avi = tmp_path / "holiday.avi"
+    avi.write_bytes(b"RIFF")
+    ffprobe_reports({avi.name: XVID_AVI})
+    instances = ffmpeg()
+    result = invoke("media", "fix", "--date-from-name", CAPTURE, str(avi))
+    assert result.exit_code == 1
+    assert f"Cannot fix {avi}" in result.output
+    assert "its name does not match the pattern" in result.output
+    assert instances == []
+
+
+def test_a_timezone_applies_to_a_date_without_an_offset(invoke, capture_avi, ffmpeg):
+    instances = ffmpeg()
+    result = invoke(
+        "media", "fix", "--date", "2006-06-30T20:47",
+        "--timezone", "Europe/Athens", str(capture_avi),
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "creation_time=2006-06-30T17:47:00Z" in instances[0].command
+
+
+@pytest.mark.parametrize(
+    ("args", "complaint"),
+    [
+        (["--date", "2006-06-30", "--date-from-name", CAPTURE], "cannot be combined"),
+        (["--timezone", "Europe/Athens"], "only applies with --date or"),
+        (["--date-from-name", CAPTURE, "--timezone", "Mars/Olympus"], "neither an"),
+        (["--date-from-name", "%H-%M"], "needs at least a year"),
+    ],
+)
+@pytest.mark.parametrize("command", ["fix", "fix-date"])
+def test_refuses_unusable_date_options(invoke, capture_avi, command, args, complaint):
+    result = invoke("media", command, *args, str(capture_avi))
+    assert result.exit_code == 2
+    assert complaint in result.output
