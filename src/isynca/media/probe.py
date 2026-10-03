@@ -33,6 +33,8 @@ FFPROBE_TIMEOUT = 60
 """Seconds before giving up on one file; a sane file answers in well under one."""
 
 _DATE_TAGS = ("creation_time", "date")
+_INTERLACED = frozenset({"tt", "bb", "tb", "bt"})
+"""ffprobe's field orders for interlaced video; "progressive" is the other."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +56,10 @@ class MediaInfo:
     height: int | None = None
     rotation: int = 0
     """Clockwise degrees the video is displayed turned by."""
+
+    interlaced: bool = False
+    duration: float | None = None
+    """Length of a video in seconds."""
 
     taken: datetime | None = None
     error: str | None = None
@@ -116,6 +122,8 @@ def _probe_video(media: MediaFile) -> MediaInfo:
         width=video.get("width"),
         height=video.get("height"),
         rotation=_rotation(video),
+        interlaced=video.get("field_order") in _INTERLACED,
+        duration=_duration(fmt.get("duration")),
         taken=read_capture_date(media) or _tag_date(fmt.get("tags", {})),
     )
 
@@ -175,6 +183,15 @@ def _rotation(stream: dict[str, Any]) -> int:
         if "rotation" in side_data:
             return round(-float(side_data["rotation"])) % 360
     return 0
+
+
+def _duration(value: object) -> float | None:
+    """Return ffprobe's duration string as seconds, or ``None``."""
+    try:
+        seconds = float(str(value))
+    except ValueError:
+        return None
+    return seconds if seconds > 0 else None
 
 
 def _tag_date(tags: dict[str, str]) -> datetime | None:

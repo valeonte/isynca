@@ -68,6 +68,16 @@ _IMAGE_PIPE = "_pipe"
 """ffprobe's format names for a lone still image end in this."""
 
 _VIDEO_OK = frozenset({"h264", "hevc", "prores"})
+_PROFILES_OK: dict[str, frozenset[str]] = {
+    "h264": frozenset({"Baseline", "Constrained Baseline", "Main", "High"}),
+    "hevc": frozenset({"Main", "Main 10"}),
+}
+"""The profiles every Apple device decodes; ffprobe names them this way.
+
+The rest -- 10-bit, 4:2:2 and 4:4:4 H.264, HEVC range extensions -- come from
+editing software and screen recorders, and play on some machines only.
+"""
+_H264_UNSURE_PROFILES = frozenset({"High 10"})
 _VIDEO_UNSURE: dict[str, str] = {
     "mjpeg": "Motion JPEG video plays on a Mac but not reliably elsewhere",
     "h263": "H.263 video from early phones plays on some Apple devices only",
@@ -144,7 +154,7 @@ def _assess_video(info: MediaInfo) -> Assessment:
             ),
         )
 
-    findings = [_judge_video_codec(info), _judge_audio_codec(info.audio_codec)]
+    findings = [judge_video_stream(info), judge_audio_stream(info.audio_codec)]
     streams_fine = all(verdict is Verdict.OK for verdict, _ in findings)
     if info.container != ISO_BMFF:
         remedy = (
@@ -166,15 +176,21 @@ def _assess_video(info: MediaInfo) -> Assessment:
     return Assessment(verdict, reasons)
 
 
-def _judge_video_codec(info: MediaInfo) -> tuple[Verdict, str]:
-    """Return the verdict on a video codec, and why."""
+def judge_video_stream(info: MediaInfo) -> tuple[Verdict, str]:
+    """Return the verdict on a file's video stream, and why."""
     codec = info.video_codec
+    if codec is not None and (codec in _PROFILES_OK or codec == "mpeg4"):
+        return _judge_profile(codec, info.video_profile)
     if codec in _VIDEO_OK:
         return Verdict.OK, ""
     if codec in _VIDEO_UNSURE:
         return Verdict.UNSURE, _VIDEO_UNSURE[codec]
+    return Verdict.CONVERT, f"{codec} video does not play on Apple devices"
+
+
+def _judge_profile(codec: str, profile: str | None) -> tuple[Verdict, str]:
+    """Judge the codecs whose playability depends on the profile."""
     if codec == "mpeg4":
-        profile = info.video_profile or "unknown profile"
         if profile == _MPEG4_SIMPLE:
             return (
                 Verdict.UNSURE,
@@ -183,14 +199,24 @@ def _judge_video_codec(info: MediaInfo) -> tuple[Verdict, str]:
             )
         return (
             Verdict.CONVERT,
-            f"MPEG-4 Part 2 video in {profile} (XviD/DivX style) does not play "
-            f"on Apple devices",
+            f"MPEG-4 Part 2 video in {profile or 'unknown profile'} (XviD/DivX "
+            f"style) does not play on Apple devices",
         )
-    return Verdict.CONVERT, f"{codec} video does not play on Apple devices"
+    # An unreported profile gets the benefit of the doubt: H.264 and HEVC
+    # straight from a camera or phone are virtually always a safe one.
+    if profile is None or profile in _PROFILES_OK[codec]:
+        return Verdict.OK, ""
+    name = "H.264" if codec == "h264" else "HEVC"
+    if codec == "hevc" or profile in _H264_UNSURE_PROFILES:
+        return (
+            Verdict.UNSURE,
+            f"{name} video in {profile} plays on some Apple devices only",
+        )
+    return Verdict.CONVERT, f"{name} video in {profile} does not play on Apple devices"
 
 
-def _judge_audio_codec(codec: str | None) -> tuple[Verdict, str]:
-    """Return the verdict on an audio codec, and why; silence is fine."""
+def judge_audio_stream(codec: str | None) -> tuple[Verdict, str]:
+    """Return the verdict on an audio stream's codec, and why; silence is fine."""
     if codec is None or codec in _AUDIO_OK or codec.startswith("pcm_s"):
         return Verdict.OK, ""
     if codec in _AUDIO_UNSURE:

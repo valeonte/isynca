@@ -73,12 +73,14 @@ def test_reads_streams_from_the_ffprobe_report(junk_video, ffprobe_says):
                     "profile": "Advanced Simple Profile",
                     "width": 640,
                     "height": 480,
+                    "field_order": "progressive",
                 },
                 {"codec_type": "audio", "codec_name": "mp2"},
             ],
         }
     )
     info = probe(as_media(junk_video))
+    assert (info.interlaced, info.duration) == (False, None)
     assert info.container == "avi"
     assert (info.video_codec, info.video_profile) == (
         "mpeg4",
@@ -238,3 +240,23 @@ def test_against_the_real_ffprobe(tmp_path):
     assert (info.video_codec, info.video_profile) == ("mpeg4", "Simple Profile")
     assert (info.width, info.height, info.audio_codec) == (64, 48, None)
     assert info.taken == datetime(2012, 11, 16, 17, 39, 23, tzinfo=UTC)
+
+
+def test_reads_duration_and_interlacing(junk_video, ffprobe_says):
+    ffprobe_says(
+        {
+            "format": {"format_name": "mpeg", "duration": "104.233333"},
+            "streams": [
+                {"codec_type": "video", "codec_name": "mpeg2video", "field_order": "tt"}
+            ],
+        }
+    )
+    info = probe(as_media(junk_video))
+    assert info.interlaced
+    assert info.duration == pytest.approx(104.233333)
+
+
+@pytest.mark.parametrize("value", ["N/A", "0", "-1"])
+def test_an_unusable_duration_is_none(junk_video, ffprobe_says, value):
+    ffprobe_says({"format": {"duration": value}})
+    assert probe(as_media(junk_video)).duration is None

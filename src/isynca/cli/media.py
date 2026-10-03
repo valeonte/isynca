@@ -9,7 +9,14 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 
 from isynca.cli.context import AppContext, get_context
 from isynca.cli.photos import (
@@ -20,12 +27,18 @@ from isynca.cli.photos import (
     VideosOpt,
     build_scanner,
 )
-from isynca.errors import DateError, RotationError
+from isynca.errors import ConvertError, DateError, RotationError
 from isynca.ledger.hashing import hash_file
 from isynca.ledger.store import Ledger
 from isynca.media.capture import read_capture_date
 from isynca.media.compat import Assessment, Verdict, assess, container_name
-from isynca.media.dating import modification_time, write_date
+from isynca.media.convert import CONVERTED_SUFFIX, convert, converted_path
+from isynca.media.dating import (
+    DATED_SUFFIX,
+    dated_path,
+    modification_time,
+    write_date,
+)
 from isynca.media.probe import MediaInfo, probe
 from isynca.media.rotate import QUARTER_TURNS, rotate_video
 from isynca.media.types import MediaFile, MediaKind
@@ -65,24 +78,30 @@ def check(
     )
     scanner = build_scanner(config)
 
-    verdicts: Counter[Verdict] = Counter()
-    undated = 0
+    checked: list[tuple[MediaInfo, Assessment]] = []
     # The spinner shares the logging console, so a warning raised mid-scan
-    # lands above it rather than through it.
+    # lands above it rather than through it. Results go to stdout only once
+    # it has gone: printed beside a live spinner on stderr, a line lands on
+    # the spinner's own row and gets mangled.
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=app_ctx.err_console,
         transient=True,
+        disable=not app_ctx.err_console.is_terminal,
     ) as progress:
         task = progress.add_task("Checking...", total=None)
         for media in scanner.scan(sources):
             info = probe(media)
-            assessment = assess(info)
-            verdicts[assessment.verdict] += 1
-            undated += assessment.verdict is not Verdict.UNREADABLE and not info.taken
-            _print_file(app_ctx.console, info, assessment)
-            progress.update(task, description=f"Checked {verdicts.total()} file(s)...")
+            checked.append((info, assess(info)))
+            progress.update(task, description=f"Checked {len(checked)} file(s)...")
+
+    verdicts: Counter[Verdict] = Counter()
+    undated = 0
+    for info, assessment in checked:
+        _print_file(app_ctx.console, info, assessment)
+        verdicts[assessment.verdict] += 1
+        undated += assessment.verdict is not Verdict.UNREADABLE and not info.taken
 
     if not verdicts:
         app_ctx.console.print("No media found.")
@@ -125,9 +144,7 @@ def _describe(info: MediaInfo) -> str:
         size = f"{info.width}x{info.height}"
         parts.append(f"{size} turned {info.rotation}°" if info.rotation else size)
     parts.append(
-        f"taken {info.taken:%Y-%m-%d %H:%M}"
-        if info.taken
-        else "[red]no date taken[/red]"
+        f"taken {_local(info.taken)}" if info.taken else "[red]no date taken[/red]"
     )
     return " · ".join(parts)
 
@@ -272,7 +289,7 @@ def _fix_one(
     before = read_capture_date(media)
     if override is None and before is not None:
         app_ctx.console.print(
-            f"[dim]Skipped {media.path}: already taken {before:%Y-%m-%d %H:%M}[/dim]"
+            f"[dim]Skipped {media.path}: already taken {_local(before)}[/dim]"
         )
         return
 
@@ -286,7 +303,7 @@ def _fix_one(
     origin = "given date" if override else "modification time"
     line = f"{verb} {change.output} (taken {when:%Y-%m-%d %H:%M %z}, from the {origin}"
     if before is not None:
-        line += f"; was {before:%Y-%m-%d %H:%M}"
+        line += f"; was {_local(before)}"
     app_ctx.console.print(line + ")", highlight=False)
     if uploaded is not None:
         app_ctx.console.print(
@@ -294,6 +311,144 @@ def _fix_one(
             f"{uploaded}.[/yellow] Uploading the dated copy adds it as a new "
             f"item; delete the old one in Photos."
         )
+
+
+@app.command("fix")
+def fix(
+    ctx: typer.Context,
+    sources: SourceArg,
+    convert_unsure: Annotated[
+        bool,
+        typer.Option(
+            "--convert-unsure",
+            help="Also convert files that play on some Apple devices only.",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show what would be written, writing nothing."),
+    ] = False,
+) -> None:
+    """Make media ready for iCloud Photos, writing new files beside the old.
+
+    Files iCloud will not take are converted into NAME_converted.mp4 (video)
+    or NAME_converted.jpg (images), dated with their own date taken or, if
+    they have none, their modification time. Files that need no converting
+    but have no date taken get a dated copy, NAME_dated.EXT, as with
+    fix-date. Files judged unsure are only dated unless --convert-unsure is
+    given. Originals are never modified, and files already fixed by an
+    earlier run are skipped, so an interrupted run can simply be repeated.
+    """
+    app_ctx = get_context(ctx)
+    scanner = build_scanner(app_ctx.config)
+
+    seen = False
+    failed = False
+    with app_ctx.open_ledger() as ledger:
+        for media in scanner.scan(sources):
+            seen = True
+            try:
+                _fix_media(app_ctx, ledger, media, convert_unsure, dry_run)
+            except (ConvertError, DateError, OSError) as exc:
+                app_ctx.err_console.print(f"[red]Cannot fix {media.path}:[/red] {exc}")
+                failed = True
+    if not seen:
+        app_ctx.console.print("No media found.")
+    if failed:
+        raise typer.Exit(code=1)
+
+
+def _fix_media(
+    app_ctx: AppContext,
+    ledger: Ledger,
+    media: MediaFile,
+    convert_unsure: bool,
+    dry_run: bool,
+) -> None:
+    """Convert or date one file, whichever it needs, and report it.
+
+    Re-running over a folder must neither redo nor compound earlier work, so
+    a file an earlier run wrote is left alone, and so is a file whose output
+    for this run already exists.
+    """
+    if media.path.stem.endswith((CONVERTED_SUFFIX, DATED_SUFFIX)):
+        _skip(app_ctx, media, "written by an earlier fix")
+        return
+
+    info = probe(media)
+    assessment = assess(info)
+    if assessment.verdict is Verdict.UNREADABLE:
+        raise ConvertError("; ".join(assessment.reasons), retryable=False)
+
+    unsure = assessment.verdict is Verdict.UNSURE
+    if assessment.verdict is not Verdict.CONVERT and not (unsure and convert_unsure):
+        if dated_path(media.path).exists():
+            _skip(app_ctx, media, f"{dated_path(media.path).name} already exists")
+            return
+        _fix_one(app_ctx, ledger, media, None, dry_run)
+        if unsure:
+            app_ctx.console.print(
+                f"  [yellow]Not converted, though it may not play everywhere:"
+                f"[/yellow] {'; '.join(assessment.reasons)}. "
+                f"--convert-unsure converts it.",
+                highlight=False,
+            )
+        return
+
+    if converted_path(media).exists():
+        _skip(app_ctx, media, f"{converted_path(media).name} already exists")
+        return
+
+    # Check the file can be converted before paying to hash it.
+    planned = convert(info, dry_run=True)
+    uploaded = _uploaded_at(ledger, media.path)
+    if dry_run:
+        change = planned
+    else:
+        with Progress(
+            TextColumn(f"Converting {media.path.name}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=app_ctx.err_console,
+            transient=True,
+            disable=not app_ctx.err_console.is_terminal,
+        ) as progress:
+            task = progress.add_task("convert", total=1.0)
+            change = convert(
+                info, on_progress=lambda done: progress.update(task, completed=done)
+            )
+
+    verb = "Would convert" if dry_run else "Converted"
+    origin = "modification time" if change.dated_from_mtime else "its own date"
+    line = (
+        f"{verb} {media.path} → {change.output.name} "
+        f"(taken {_local(change.taken)}, from {origin}"
+    )
+    if change.copied:
+        line += f"; {' and '.join(change.copied)} copied as is"
+    app_ctx.console.print(line + ")", highlight=False)
+    if uploaded is not None:
+        app_ctx.console.print(
+            f"  [yellow]The original was uploaded to iCloud Photos on "
+            f"{uploaded}.[/yellow] Uploading the converted copy adds it as a "
+            f"new item; delete the old one in Photos."
+        )
+
+
+def _skip(app_ctx: AppContext, media: MediaFile, why: str) -> None:
+    """Report a file left alone, and why."""
+    app_ctx.console.print(f"[dim]Skipped {media.path}: {why}[/dim]", highlight=False)
+
+
+def _local(when: datetime) -> str:
+    """Return ``when`` as local wall-clock time, for display.
+
+    Container dates are UTC and EXIF dates are naive wall-clock time; showing
+    the first as UTC would make one file look an hour off from the other.
+    """
+    shown = when.astimezone() if when.tzinfo is not None else when
+    return f"{shown:%Y-%m-%d %H:%M}"
 
 
 def _uploaded_at(ledger: Ledger, path: Path) -> str | None:

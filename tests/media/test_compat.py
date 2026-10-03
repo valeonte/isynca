@@ -169,3 +169,42 @@ def test_the_worst_finding_decides_and_every_reason_is_kept():
 )
 def test_container_names(name, container, expected):
     assert container_name(info(name=name, container=container)) == expected
+
+
+# --- profiles ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("codec", "profile"),
+    [
+        ("h264", "Constrained Baseline"),
+        ("h264", "Main"),
+        ("h264", "High"),
+        ("hevc", "Main"),
+        ("hevc", "Main 10"),
+    ],
+)
+def test_apple_profiles_are_ok(codec, profile):
+    assert assess(video(codec=codec, video_profile=profile)).verdict is Verdict.OK
+
+
+@pytest.mark.parametrize(
+    ("codec", "profile", "reason"),
+    [
+        ("h264", "High 10", "H.264 video in High 10 plays on some Apple devices only"),
+        ("hevc", "Rext", "HEVC video in Rext plays on some Apple devices only"),
+    ],
+)
+def test_uncommon_profiles_are_unsure(codec, profile, reason):
+    result = assess(video(codec=codec, video_profile=profile))
+    assert result.verdict is Verdict.UNSURE
+    assert result.reasons == (reason,)
+
+
+@pytest.mark.parametrize("profile", ["High 4:4:4 Predictive", "High 4:2:2"])
+def test_editing_profiles_of_h264_need_converting(profile):
+    result = assess(video(video_profile=profile))
+    assert result.verdict is Verdict.CONVERT
+    assert result.reasons == (
+        f"H.264 video in {profile} does not play on Apple devices",
+    )

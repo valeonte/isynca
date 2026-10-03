@@ -72,6 +72,14 @@ class DateError(ItemError):
     """
 
 
+class ConvertError(ItemError):
+    """One file could not be converted into a format iCloud Photos takes.
+
+    Always raised with ``retryable=False``: ffmpeg refusing a file once will
+    refuse it the same way again.
+    """
+
+
 class ToolMissingError(FatalError):
     """An external program isynca relies on, such as ffprobe, is not installed."""
 

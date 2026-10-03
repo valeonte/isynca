@@ -35,6 +35,7 @@ pixi run isynca photos upload ~/Media
 | `isynca ledger forget PATH` | Drop one file's record so it uploads again |
 | `isynca ledger prune` | Remove cache rows for files that no longer exist |
 | `isynca media check SRC...` | Show what files hold and whether iCloud Photos will take them |
+| `isynca media fix SRC...` | Convert what iCloud will not take, date what lacks a date |
 | `isynca media fix-date SRC... [--date D]` | Write a dated copy of files with no date taken |
 | `isynca media rotate FILE... --clockwise N` | Write an upright copy of sideways videos, losslessly |
 
@@ -327,6 +328,37 @@ uploaded.
 
 Videos are read with `ffprobe`, which comes with ffmpeg
 (`sudo apt install ffmpeg`); images need nothing extra.
+
+## Fixing media for iCloud
+
+`media fix` does whatever each file needs, judged as `media check` judges it:
+
+```bash
+isynca media fix --dry-run Videos/    # see what it would do
+isynca media fix Videos/
+```
+
+* **Files iCloud will not take** are converted into `NAME_converted.mp4`
+  (video) or `NAME_converted.jpg` (images). Video becomes H.264 with AAC
+  audio; streams that are already H.264/HEVC or AAC are copied untouched, so
+  a file that only needs a new container is just rewrapped. Interlaced video
+  is deinterlaced. Images become JPEG at quality 95.
+* **Every converted file gets a date taken**: its own if it has one, or else
+  its modification time.
+* **Files that need no converting** but have no date taken get a dated copy,
+  `NAME_dated.EXT`, exactly as `fix-date` would write it.
+* **Unsure files** (Motion JPEG, early phone video) are only dated.
+  `--convert-unsure` converts them too.
+* **Unreadable files** are reported and left alone.
+
+Originals are never modified, and outputs keep the original's modification
+time. A re-run skips files whose output already exists, and files an earlier
+run wrote, so an interrupted run over a big folder can simply be started
+again. Re-encoding runs at roughly twice real time for old 640x480
+camera video. Needs ffmpeg.
+
+The new files sit beside the originals, so upload only the fixed ones -- or
+move the originals elsewhere first.
 
 ## Giving undated files a date
 

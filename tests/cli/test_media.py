@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import UTC, datetime
 
 import pytest
@@ -297,3 +298,145 @@ def test_fix_date_warns_when_the_original_is_already_in_icloud(
     result = invoke("media", "fix-date", str(path))
     assert result.exit_code == 0, result.output
     assert "The original was uploaded to iCloud Photos on 2025-06-07" in result.output
+
+
+# --- fix ---------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def utc(monkeypatch):
+    """Show dates in UTC, so local-time output is the same on every machine."""
+    monkeypatch.setenv("TZ", "UTC")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+MJPEG_MOV = {
+    "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "4.0"},
+    "streams": [
+        {"codec_type": "video", "codec_name": "mjpeg", "width": 320, "height": 240},
+        {"codec_type": "audio", "codec_name": "pcm_u8"},
+    ],
+}
+
+
+@pytest.fixture
+def fix_folder(tmp_path, make_image, ffprobe_reports, ffmpeg):
+    """A folder of one file for each thing fix can do, dated 2005-07-20."""
+    folder = tmp_path / "media"
+    make_image("media/undated.jpg")
+    make_image("media/dated.jpg", original="2023:07:14 12:34:56")
+    Image.new("RGB", (8, 8)).save(folder / "old.bmp")
+    (folder / "SSL12779.AVI").write_bytes(b"RIFF")
+    (folder / "broken.mov").write_bytes(b"x")
+    for path in folder.iterdir():
+        os.utime(path, (1_121_853_364, 1_121_853_364))  # 2005-07-20 09:56:04
+    ffprobe_reports(
+        {
+            "SSL12779.AVI": XVID_AVI
+            | {"format": {"format_name": "avi", "duration": "10"}},
+            "broken.mov": "Invalid data found when processing input",
+        }
+    )
+    ffmpeg(lines=["out_time_us=5000000\n", "progress=end\n"])
+    return folder
+
+
+def test_fix_converts_dates_and_skips_as_each_file_needs(invoke, fix_folder):
+    result = invoke("media", "fix", str(fix_folder))
+    assert result.exit_code == 1, result.output
+    out = result.output
+
+    assert (
+        f"Converted {fix_folder / 'SSL12779.AVI'} → SSL12779_converted.mp4 "
+        f"(taken 2005-07-20 09:56, from modification time)" in out
+    )
+    assert (fix_folder / "SSL12779_converted.mp4").exists()
+    assert f"Converted {fix_folder / 'old.bmp'} → old_converted.jpg" in out
+    assert exif_taken(fix_folder / "old_converted.jpg") == "2005:07:20 09:56:04"
+    assert f"Wrote {fix_folder / 'undated_dated.jpg'}" in out
+    assert "already taken 2023-07-14 12:34" in out
+    assert f"Cannot fix {fix_folder / 'broken.mov'}" in out
+    assert "Invalid data found when processing input" in out
+
+
+def test_fix_dry_run_writes_nothing(invoke, fix_folder):
+    before = sorted(p.name for p in fix_folder.iterdir())
+    result = invoke("media", "fix", "--dry-run", str(fix_folder))
+    assert "Would convert" in result.output
+    assert "Would write" in result.output
+    assert sorted(p.name for p in fix_folder.iterdir()) == before
+
+
+def test_fix_reruns_skip_what_is_done(invoke, fix_folder):
+    invoke("media", "fix", str(fix_folder))
+    result = invoke("media", "fix", str(fix_folder))
+    out = result.output
+    assert "Converted" not in out
+    assert "Wrote" not in out
+    assert "SSL12779_converted.mp4 already exists" in out
+    assert "undated_dated.jpg already exists" in out
+    assert (
+        f"Skipped {fix_folder / 'old_converted.jpg'}: written by an earlier fix" in out
+    )
+
+
+def test_fix_only_dates_unsure_files_unless_asked(
+    invoke, tmp_path, ffprobe_reports, ffmpeg
+):
+    clip = tmp_path / "P8080017.MOV"
+    clip.write_bytes(box(b"ftyp", b"qt  ") + box(b"moov", mvhd(0) + trak()))
+    ffprobe_reports({"P8080017.MOV": MJPEG_MOV})
+    ffmpeg()
+
+    result = invoke("media", "fix", str(clip))
+    assert result.exit_code == 0, result.output
+    assert f"Wrote {tmp_path / 'P8080017_dated.MOV'}" in result.output
+    assert "Not converted, though it may not play everywhere" in result.output
+    assert "Motion JPEG video" in result.output
+
+    result = invoke("media", "fix", "--convert-unsure", str(clip))
+    assert result.exit_code == 0, result.output
+    assert "Converted" in result.output
+    assert (tmp_path / "P8080017_converted.mp4").exists()
+
+
+def test_fix_reports_copied_streams(invoke, tmp_path, ffprobe_reports, ffmpeg):
+    mkv = tmp_path / "clip.mkv"
+    mkv.write_bytes(b"x")
+    ffprobe_reports(
+        {
+            "clip.mkv": {
+                "format": {
+                    "format_name": "matroska,webm",
+                    "tags": {"creation_time": "2019-04-05T06:07:08Z"},
+                },
+                "streams": [
+                    {"codec_type": "video", "codec_name": "h264", "profile": "High"},
+                    {"codec_type": "audio", "codec_name": "aac"},
+                ],
+            }
+        }
+    )
+    ffmpeg()
+    result = invoke("media", "fix", str(mkv))
+    assert (
+        "(taken 2019-04-05 06:07, from its own date; video and audio copied as is)"
+        in result.output
+    )
+
+
+def test_fix_warns_when_the_original_is_already_in_icloud(invoke, fix_folder, data_dir):
+    avi = fix_folder / "SSL12779.AVI"
+    seed_upload(data_dir, avi, hash_file(avi))
+    result = invoke("media", "fix", str(avi))
+    assert result.exit_code == 0, result.output
+    assert "Uploading the converted copy adds it as a new item" in result.output
+
+
+def test_fix_with_nothing_to_fix(invoke, tmp_path):
+    result = invoke("media", "fix", str(tmp_path))
+    assert result.exit_code == 0
+    assert "No media found." in result.output

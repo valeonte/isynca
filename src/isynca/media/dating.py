@@ -151,15 +151,7 @@ def _plan_jpeg(path: Path, when: datetime) -> Writer:
             retryable=False,
         )
 
-    stamp = when.strftime(EXIF_DATETIME_FORMAT)
-    offset = when.strftime("%z")
-    offset = f"{offset[:3]}:{offset[3:]}"
-    sub_ifd = exif.get_ifd(EXIF_IFD_POINTER)
-    sub_ifd[DATETIME_ORIGINAL] = stamp
-    sub_ifd[DATETIME_DIGITIZED] = stamp
-    sub_ifd[OFFSET_TIME_ORIGINAL] = offset
-    sub_ifd[OFFSET_TIME_DIGITIZED] = offset
-
+    stamp_exif(exif, when)
     payload = exif.tobytes()
     if len(payload) + 2 > _MAX_SEGMENT:
         raise DateError("its EXIF block is too large to rewrite", retryable=False)
@@ -170,6 +162,24 @@ def _plan_jpeg(path: Path, when: datetime) -> Writer:
         target.write_bytes(dated)
 
     return write
+
+
+def stamp_exif(exif: Image.Exif, when: datetime) -> None:
+    """Set the date-taken tags of ``exif`` to ``when``.
+
+    EXIF stores wall-clock time with no zone, so the zone goes alongside in
+    the offset tags. A naive ``when`` -- an EXIF date read back from a file --
+    already is wall-clock time and gets no offset, rather than an invented one.
+    """
+    stamp = when.strftime(EXIF_DATETIME_FORMAT)
+    sub_ifd = exif.get_ifd(EXIF_IFD_POINTER)
+    sub_ifd[DATETIME_ORIGINAL] = stamp
+    sub_ifd[DATETIME_DIGITIZED] = stamp
+    if when.tzinfo is not None:
+        offset = when.strftime("%z")
+        sub_ifd[OFFSET_TIME_ORIGINAL] = sub_ifd[OFFSET_TIME_DIGITIZED] = (
+            f"{offset[:3]}:{offset[3:]}"
+        )
 
 
 def _splice_exif(data: bytes, segment: bytes) -> bytes:
