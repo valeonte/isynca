@@ -324,6 +324,17 @@ def fix(
             help="Also convert files that play on some Apple devices only.",
         ),
     ] = False,
+    date: Annotated[
+        str | None,
+        typer.Option(
+            "--date",
+            help=(
+                "Date taken to give the result instead of its own or the "
+                "modification time, e.g. 2009-07-20T15:30+03:00. One file only."
+            ),
+            show_default=False,
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Show what would be written, writing nothing."),
@@ -338,7 +349,11 @@ def fix(
     fix-date. Files judged unsure are only dated unless --convert-unsure is
     given. Originals are never modified, and files already fixed by an
     earlier run are skipped, so an interrupted run can simply be repeated.
+
+    --date takes a single file and gives its result that date instead,
+    replacing any date it already has, whether it is converted or only dated.
     """
+    override = _parse_override(date, sources) if date is not None else None
     app_ctx = get_context(ctx)
     scanner = build_scanner(app_ctx.config)
 
@@ -348,7 +363,7 @@ def fix(
         for media in scanner.scan(sources):
             seen = True
             try:
-                _fix_media(app_ctx, ledger, media, convert_unsure, dry_run)
+                _fix_media(app_ctx, ledger, media, convert_unsure, override, dry_run)
             except (ConvertError, DateError, OSError) as exc:
                 app_ctx.err_console.print(f"[red]Cannot fix {media.path}:[/red] {exc}")
                 failed = True
@@ -363,15 +378,19 @@ def _fix_media(
     ledger: Ledger,
     media: MediaFile,
     convert_unsure: bool,
+    override: datetime | None,
     dry_run: bool,
 ) -> None:
     """Convert or date one file, whichever it needs, and report it.
 
     Re-running over a folder must neither redo nor compound earlier work, so
     a file an earlier run wrote is left alone, and so is a file whose output
-    for this run already exists.
+    for this run already exists. An explicit ``override`` date is a request
+    about one named file, so none of that applies: an existing output is
+    reported as an error instead of being quietly skipped.
     """
-    if media.path.stem.endswith((CONVERTED_SUFFIX, DATED_SUFFIX)):
+    explicit = override is not None
+    if not explicit and media.path.stem.endswith((CONVERTED_SUFFIX, DATED_SUFFIX)):
         _skip(app_ctx, media, "written by an earlier fix")
         return
 
@@ -382,10 +401,10 @@ def _fix_media(
 
     unsure = assessment.verdict is Verdict.UNSURE
     if assessment.verdict is not Verdict.CONVERT and not (unsure and convert_unsure):
-        if dated_path(media.path).exists():
+        if not explicit and dated_path(media.path).exists():
             _skip(app_ctx, media, f"{dated_path(media.path).name} already exists")
             return
-        _fix_one(app_ctx, ledger, media, None, dry_run)
+        _fix_one(app_ctx, ledger, media, override, dry_run)
         if unsure:
             app_ctx.console.print(
                 f"  [yellow]Not converted, though it may not play everywhere:"
@@ -395,12 +414,12 @@ def _fix_media(
             )
         return
 
-    if converted_path(media).exists():
+    if not explicit and converted_path(media).exists():
         _skip(app_ctx, media, f"{converted_path(media).name} already exists")
         return
 
     # Check the file can be converted before paying to hash it.
-    planned = convert(info, dry_run=True)
+    planned = convert(info, date=override, dry_run=True)
     uploaded = _uploaded_at(ledger, media.path)
     if dry_run:
         change = planned
@@ -416,11 +435,16 @@ def _fix_media(
         ) as progress:
             task = progress.add_task("convert", total=1.0)
             change = convert(
-                info, on_progress=lambda done: progress.update(task, completed=done)
+                info,
+                date=override,
+                on_progress=lambda done: progress.update(task, completed=done),
             )
 
     verb = "Would convert" if dry_run else "Converted"
-    origin = "modification time" if change.dated_from_mtime else "its own date"
+    if explicit:
+        origin = "the given date"
+    else:
+        origin = "modification time" if change.dated_from_mtime else "its own date"
     line = (
         f"{verb} {media.path} → {change.output.name} "
         f"(taken {_local(change.taken)}, from {origin}"

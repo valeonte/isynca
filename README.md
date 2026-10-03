@@ -354,6 +354,16 @@ isynca media fix Videos/
   `--convert-unsure` converts them too.
 * **Unreadable files** are reported and left alone.
 
+For a single file, `--date` gives the result that date instead -- whether it
+is converted or only dated, and even if it already has a date of its own:
+
+```bash
+isynca media fix --date 2022-08-20T15:00 "Videos/Eva furthest.mp4"
+```
+
+It is refused for a folder or more than one file, and an existing output is
+reported as an error rather than skipped.
+
 Originals are never modified, and outputs keep the original's modification
 time. A re-run skips files whose output already exists, and files an earlier
 run wrote, so an interrupted run over a big folder can simply be started

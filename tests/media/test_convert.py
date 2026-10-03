@@ -256,6 +256,14 @@ def test_keeps_the_videos_own_date(avi, ffmpeg):
     assert (result.taken, result.dated_from_mtime) == (own, False)
 
 
+def test_a_given_date_wins_over_the_videos_own(avi, ffmpeg):
+    instances = ffmpeg()
+    given = datetime(2009, 7, 20, 15, 30, tzinfo=ATHENS)
+    result = convert(xvid(avi, taken=datetime(2001, 1, 1, tzinfo=UTC)), date=given)
+    assert (result.taken, result.dated_from_mtime) == (given, False)
+    assert "creation_time=2009-07-20T12:30:00Z" in instances[0].command
+
+
 def test_reports_the_streams_it_copied(avi, ffmpeg):
     ffmpeg()
     result = convert(xvid(avi, video_codec="h264", video_profile="High"))

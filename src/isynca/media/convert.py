@@ -81,12 +81,18 @@ def converted_path(media: MediaFile) -> Path:
 
 
 def convert(
-    info: MediaInfo, *, dry_run: bool = False, on_progress: Progress | None = None
+    info: MediaInfo,
+    *,
+    date: datetime | None = None,
+    dry_run: bool = False,
+    on_progress: Progress | None = None,
 ) -> Conversion:
     """Write a copy of the file ``info`` describes that iCloud Photos takes.
 
     Args:
         info: What :func:`isynca.media.probe.probe` found in the file.
+        date: The date taken to give the copy, in place of the original's own
+            date or its modification time.
         dry_run: Check and report the conversion without running it.
         on_progress: Told how far a video conversion has got, when known.
 
@@ -103,7 +109,7 @@ def convert(
         raise ConvertError(f"{output.name} already exists", retryable=False)
 
     try:
-        taken = info.taken or modification_time(media.path)
+        taken = date or info.taken or modification_time(media.path)
         if not dry_run:
             partial = output.with_name(f".{output.name}.partial")
             try:
@@ -132,7 +138,7 @@ def convert(
         source=media.path,
         output=output,
         taken=taken,
-        dated_from_mtime=info.taken is None,
+        dated_from_mtime=date is None and info.taken is None,
         copied=copied,
     )
 

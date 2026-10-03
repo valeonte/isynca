@@ -469,3 +469,57 @@ def test_fix_with_nothing_to_fix(invoke, tmp_path):
     result = invoke("media", "fix", str(tmp_path))
     assert result.exit_code == 0
     assert "No media found." in result.output
+
+
+def test_fix_gives_a_converted_file_the_given_date(invoke, fix_folder):
+    avi = fix_folder / "SSL12779.AVI"
+    result = invoke("media", "fix", "--date", "2009-07-20T15:30+03:00", str(avi))
+    assert result.exit_code == 0, result.output
+    assert (
+        f"Converted {avi} → SSL12779_converted.mp4 (taken 2009-07-20 12:30, "
+        f"from the given date)" in result.output
+    )
+
+
+def test_fix_gives_a_dated_file_the_given_date_over_its_own(
+    invoke, tmp_path, make_image
+):
+    path = make_image("phone.jpg", original="2023:07:14 12:34:56")
+    result = invoke("media", "fix", "--date", "2009-07-20T15:30+03:00", str(path))
+    assert result.exit_code == 0, result.output
+    assert "from the given date; was 2023-07-14 12:34" in result.output
+    assert exif_taken(dated_path(path)) == "2009:07:20 15:30:00"
+
+
+def test_fix_with_a_date_does_not_skip_a_file_an_earlier_fix_wrote(
+    invoke, tmp_path, make_image
+):
+    path = make_image("scan_dated.jpg", original="2023:07:14 12:34:56")
+    result = invoke("media", "fix", "--date", "2009-07-20T15:30", str(path))
+    assert result.exit_code == 0, result.output
+    assert dated_path(path).name == "scan_dated_dated.jpg"
+    assert dated_path(path).exists()
+
+
+def test_fix_with_a_date_reports_an_existing_output_as_an_error(invoke, fix_folder):
+    avi = fix_folder / "SSL12779.AVI"
+    (fix_folder / "SSL12779_converted.mp4").write_bytes(b"earlier")
+    result = invoke("media", "fix", "--date", "2009-07-20T15:30", str(avi))
+    assert result.exit_code == 1
+    assert "Cannot fix" in result.output
+    assert "SSL12779_converted.mp4 already exists" in result.output
+    assert (fix_folder / "SSL12779_converted.mp4").read_bytes() == b"earlier"
+
+
+@pytest.mark.parametrize("many", ["folder", "two files"])
+def test_fix_refuses_a_date_for_more_than_one_file(invoke, fix_folder, many):
+    targets = (
+        [str(fix_folder)]
+        if many == "folder"
+        else [str(fix_folder / "undated.jpg"), str(fix_folder / "dated.jpg")]
+    )
+    before = sorted(p.name for p in fix_folder.iterdir())
+    result = invoke("media", "fix", "--date", "2009-07-20T15:30", *targets)
+    assert result.exit_code == 2
+    assert "takes exactly one file" in result.output
+    assert sorted(p.name for p in fix_folder.iterdir()) == before
