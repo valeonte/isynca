@@ -109,6 +109,62 @@ def test_reencodes_h264_in_a_profile_apple_cannot_play(avi):
     assert option(command, "-c:v") == "libx264"
 
 
+def colours(command):
+    if "-colorspace" not in command:
+        return None
+    return tuple(
+        option(command, flag)
+        for flag in ("-colorspace", "-color_primaries", "-color_trc")
+    )
+
+
+def test_completes_the_motion_jpeg_colour_description_as_bt601(avi):
+    info = xvid(avi, video_codec="mjpeg", color_matrix="bt470bg", height=240)
+    command = _ffmpeg_command(info, avi, datetime.now(UTC))
+    assert colours(command) == ("smpte170m", "smpte170m", "smpte170m")
+
+
+def test_tags_untagged_hd_video_as_bt709(avi):
+    command = _ffmpeg_command(xvid(avi, height=720), avi, datetime.now(UTC))
+    assert colours(command) == ("bt709", "bt709", "bt709")
+
+
+def test_tags_untagged_sd_video_as_bt601(avi):
+    command = _ffmpeg_command(xvid(avi, height=None), avi, datetime.now(UTC))
+    assert colours(command) == ("smpte170m", "smpte170m", "smpte170m")
+
+
+def test_fills_in_only_what_is_missing(avi):
+    info = xvid(avi, color_matrix="bt709", color_primaries="bt470bg", height=480)
+    command = _ffmpeg_command(info, avi, datetime.now(UTC))
+    assert colours(command) == ("bt709", "bt470bg", "bt709")
+
+
+def test_keeps_a_complete_colour_description(avi):
+    info = xvid(
+        avi, color_matrix="bt470bg", color_primaries="bt470bg", color_transfer="gamma28"
+    )
+    assert colours(_ffmpeg_command(info, avi, datetime.now(UTC))) is None
+
+
+def test_reencodes_h264_with_the_rejected_colour_description(avi):
+    info = xvid(
+        avi,
+        container="mov,mp4,m4a,3gp,3g2,mj2",
+        video_codec="h264",
+        video_profile="High",
+        color_matrix="bt470bg",
+    )
+    command = _ffmpeg_command(info, avi, datetime.now(UTC))
+    assert option(command, "-c:v") == "libx264"
+    assert colours(command) == ("smpte170m", "smpte170m", "smpte170m")
+
+
+def test_writes_no_extra_metadata_keys(avi):
+    command = _ffmpeg_command(xvid(avi), avi, datetime.now(UTC))
+    assert option(command, "-movflags") == "+faststart"
+
+
 def test_writes_the_date_as_utc_creation_time(avi):
     command = _ffmpeg_command(
         xvid(avi), avi, datetime(2009, 7, 20, 15, 30, tzinfo=ATHENS)

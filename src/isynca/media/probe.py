@@ -58,6 +58,11 @@ class MediaInfo:
     """Clockwise degrees the video is displayed turned by."""
 
     interlaced: bool = False
+    color_matrix: str | None = None
+    color_primaries: str | None = None
+    color_transfer: str | None = None
+    """The video's colour description, as ffprobe names it; ``None`` if unset."""
+
     duration: float | None = None
     """Length of a video in seconds."""
 
@@ -123,6 +128,9 @@ def _probe_video(media: MediaFile) -> MediaInfo:
         height=video.get("height"),
         rotation=_rotation(video),
         interlaced=video.get("field_order") in _INTERLACED,
+        color_matrix=_colour(video.get("color_space")),
+        color_primaries=_colour(video.get("color_primaries")),
+        color_transfer=_colour(video.get("color_transfer")),
         duration=_duration(fmt.get("duration")),
         taken=read_capture_date(media) or _tag_date(fmt.get("tags", {})),
     )
@@ -183,6 +191,11 @@ def _rotation(stream: dict[str, Any]) -> int:
         if "rotation" in side_data:
             return round(-float(side_data["rotation"])) % 360
     return 0
+
+
+def _colour(value: object) -> str | None:
+    """Return one colour-description field, or ``None`` if ffprobe has none."""
+    return None if value in (None, "unknown", "reserved") else str(value)
 
 
 def _duration(value: object) -> float | None:

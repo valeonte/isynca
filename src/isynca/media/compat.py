@@ -13,6 +13,9 @@ known to decode:
   H.263, DV and AV1 play on some devices and not others.
 * **Audio.** AAC, ALAC, MP3, AC-3 and signed PCM are safe. AMR and 8-bit PCM
   from early phones and cameras are doubtful; anything else is not decoded.
+* **Colour.** A bt470bg matrix with no primaries or transfer -- what old
+  Motion JPEG cameras write -- makes iCloud refuse the file outright, so
+  H.264 or HEVC carrying it has to be re-encoded.
 * **Images.** JPEG, HEIF, PNG, GIF, TIFF and WebP. AVIF needs a recent device
   and RAW support depends on the camera model.
 
@@ -179,6 +182,12 @@ def _assess_video(info: MediaInfo) -> Assessment:
 def judge_video_stream(info: MediaInfo) -> tuple[Verdict, str]:
     """Return the verdict on a file's video stream, and why."""
     codec = info.video_codec
+    if codec in _PROFILES_OK and has_rejected_colours(info):
+        return (
+            Verdict.CONVERT,
+            "its colour description names a bt470bg matrix but no primaries or "
+            "transfer, which iCloud refuses to transcode",
+        )
     if codec is not None and (codec in _PROFILES_OK or codec == "mpeg4"):
         return _judge_profile(codec, info.video_profile)
     if codec in _VIDEO_OK:
@@ -186,6 +195,23 @@ def judge_video_stream(info: MediaInfo) -> tuple[Verdict, str]:
     if codec in _VIDEO_UNSURE:
         return Verdict.UNSURE, _VIDEO_UNSURE[codec]
     return Verdict.CONVERT, f"{codec} video does not play on Apple devices"
+
+
+def has_rejected_colours(info: MediaInfo) -> bool:
+    """Return whether the video's colour description is one iCloud rejects.
+
+    Old cameras recording Motion JPEG mark the matrix as bt470bg and leave
+    primaries and transfer unset, and a re-encode inherits that. iCloud
+    answers such a file with 415 "unsupported for transcoding"; the same
+    video with a complete description, or none at all, goes through. Other
+    half-filled descriptions are seen among accepted uploads, so only this
+    one is singled out.
+    """
+    return (
+        info.color_matrix == "bt470bg"
+        and info.color_primaries is None
+        and info.color_transfer is None
+    )
 
 
 def _judge_profile(codec: str, profile: str | None) -> tuple[Verdict, str]:

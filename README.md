@@ -315,7 +315,7 @@ It takes folders too, with the same `--no-videos`, `--no-images` and
 | --- | --- |
 | `ok` | MP4/MOV with H.264, HEVC or ProRes; JPEG, HEIC, PNG, GIF, TIFF, WebP |
 | `unsure` | Plays on some Apple devices only: Motion JPEG, H.263, MPEG-4 Simple Profile, AMR audio, AVIF, RAW |
-| `convert` | Will not be taken or will not play: AVI, MPG, WMV, MKV, XviD/DivX, MPEG-1/2 |
+| `convert` | Will not be taken or will not play: AVI, MPG, WMV, MKV, XviD/DivX, MPEG-1/2, and H.264 carrying the colour tags old Motion JPEG cameras write |
 | `unreadable` | Damaged, or not what its name says -- such as a JPEG thumbnail saved as `.MOV` |
 
 The verdicts are informed guesses, not Apple's word: an upload that iCloud
@@ -342,7 +342,10 @@ isynca media fix Videos/
   (video) or `NAME_converted.jpg` (images). Video becomes H.264 with AAC
   audio; streams that are already H.264/HEVC or AAC are copied untouched, so
   a file that only needs a new container is just rewrapped. Interlaced video
-  is deinterlaced. Images become JPEG at quality 95.
+  is deinterlaced, and an incomplete colour description is completed: old
+  Motion JPEG cameras tag only the colour matrix, and iCloud refuses an
+  H.264 file carrying that with "unsupported for transcoding". Images become
+  JPEG at quality 95.
 * **Every converted file gets a date taken**: its own if it has one, or else
   its modification time.
 * **Files that need no converting** but have no date taken get a dated copy,

@@ -6,8 +6,9 @@ across untouched, so a file that only needs a new container -- an MKV or AVI
 of H.264 -- is rewrapped in seconds with no loss. Everything else is
 re-encoded: x264 at CRF 18 with the slow preset, which is visually lossless
 for the camera and phone footage this is meant for, and AAC at 128 kb/s.
-Interlaced video is deinterlaced first, and odd frame sizes are rounded down
-to even ones, which 4:2:0 H.264 requires.
+Interlaced video is deinterlaced first, odd frame sizes are rounded down to
+even ones, which 4:2:0 H.264 requires, and an incomplete colour description
+is completed, without which iCloud may refuse the result.
 
 Images become JPEG at quality 95, keeping their EXIF and colour profile.
 
@@ -53,6 +54,7 @@ stream is copied only if compat also passes its profile.
 _X264 = ("-c:v", "libx264", "-preset", "slow", "-crf", "18", "-pix_fmt", "yuv420p")
 _AAC = ("-c:a", "aac", "-b:a", "128k")
 _EVEN_SIZE = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+_HD_HEIGHT = 720
 
 Progress = Callable[[float], None]
 """Called with the fraction of a video converted so far, from 0 to 1."""
@@ -140,6 +142,39 @@ def _copies_video(info: MediaInfo) -> bool:
     return info.video_codec in _VIDEO_COPY and judge_video_stream(info)[0] is Verdict.OK
 
 
+def _colour_options(info: MediaInfo) -> list[str]:
+    """Return options giving a re-encode a complete colour description.
+
+    An encoder copies whatever description the source had, and a partial one
+    can get the file refused by iCloud (see
+    :func:`isynca.media.compat.has_rejected_colours`). A complete description
+    is kept as it is. Anything less is filled in with the standard for the
+    frame size -- BT.601 below 720 lines, BT.709 from there up -- which is
+    what players assume of untagged video anyway, so no colour changes. A
+    bt470bg matrix becomes smpte170m: the same BT.601 coefficients, under
+    the name that matches the primaries and transfer written beside it.
+    """
+    if info.color_matrix and info.color_primaries and info.color_transfer:
+        return []
+    hd = (info.height or 0) >= _HD_HEIGHT
+    standard = (
+        "bt709"
+        if info.color_matrix == "bt709" or (info.color_matrix is None and hd)
+        else "smpte170m"
+    )
+    matrix = (
+        info.color_matrix if info.color_matrix not in (None, "bt470bg") else standard
+    )
+    return [
+        "-colorspace",
+        matrix,
+        "-color_primaries",
+        info.color_primaries or standard,
+        "-color_trc",
+        info.color_transfer or standard,
+    ]
+
+
 def _convert_image(source: Path, target: Path, taken: datetime) -> None:
     """Re-encode an image as JPEG, keeping its EXIF and stamping the date."""
     try:
@@ -181,6 +216,7 @@ def _ffmpeg_command(info: MediaInfo, target: Path, taken: datetime) -> list[str]
     else:
         filters = ["yadif"] if info.interlaced else []
         command += [*_X264, "-vf", ",".join([*filters, _EVEN_SIZE])]
+        command += _colour_options(info)
     command += ["-c:a", "copy"] if info.audio_codec in _AUDIO_COPY else list(_AAC)
     command += [
         "-map_metadata",
@@ -189,7 +225,7 @@ def _ffmpeg_command(info: MediaInfo, target: Path, taken: datetime) -> list[str]
         "-metadata",
         f"creation_time={taken.astimezone(UTC):%Y-%m-%dT%H:%M:%SZ}",
         "-movflags",
-        "+faststart+use_metadata_tags",
+        "+faststart",
         "-progress",
         "pipe:1",
         "-nostats",

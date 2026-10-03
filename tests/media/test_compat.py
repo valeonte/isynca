@@ -208,3 +208,31 @@ def test_editing_profiles_of_h264_need_converting(profile):
     assert result.reasons == (
         f"H.264 video in {profile} does not play on Apple devices",
     )
+
+
+# --- colour ------------------------------------------------------------------
+
+
+def test_the_motion_jpeg_colour_description_needs_converting():
+    """A bt470bg matrix with nothing else is what iCloud refused with 415."""
+    result = assess(video(video_profile="High", color_matrix="bt470bg"))
+    assert result.verdict is Verdict.CONVERT
+    assert "bt470bg matrix but no primaries or transfer" in result.reasons[0]
+
+
+@pytest.mark.parametrize(
+    "colours",
+    [
+        {},
+        {"color_matrix": "smpte170m"},
+        {"color_matrix": "bt470bg", "color_primaries": "bt470bg"},
+        {"color_matrix": "bt470bg", "color_transfer": "smpte170m"},
+        {
+            "color_matrix": "bt709",
+            "color_primaries": "bt709",
+            "color_transfer": "bt709",
+        },
+    ],
+)
+def test_colour_descriptions_seen_among_accepted_uploads_are_ok(colours):
+    assert assess(video(video_profile="High", **colours)).verdict is Verdict.OK

@@ -260,3 +260,24 @@ def test_reads_duration_and_interlacing(junk_video, ffprobe_says):
 def test_an_unusable_duration_is_none(junk_video, ffprobe_says, value):
     ffprobe_says({"format": {"duration": value}})
     assert probe(as_media(junk_video)).duration is None
+
+
+def test_reads_the_colour_description(junk_video, ffprobe_says):
+    ffprobe_says(
+        {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "mjpeg",
+                    "color_space": "bt470bg",
+                    "color_primaries": "unknown",
+                }
+            ]
+        }
+    )
+    info = probe(as_media(junk_video))
+    assert (info.color_matrix, info.color_primaries, info.color_transfer) == (
+        "bt470bg",
+        None,
+        None,
+    )
