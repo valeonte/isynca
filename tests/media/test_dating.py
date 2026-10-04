@@ -1,5 +1,6 @@
 import os
 import struct
+import time
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
@@ -63,6 +64,24 @@ def test_modification_time_is_local_and_aware(tmp_path):
     when = modification_time(path)
     assert when.tzinfo is not None
     assert when.timestamp() == 1_248_093_005
+
+
+def test_a_shifted_modification_time_keeps_its_time_of_day(tmp_path, monkeypatch):
+    monkeypatch.setenv("TZ", "Europe/London")
+    time.tzset()
+    try:
+        path = tmp_path / "a.avi"
+        path.write_bytes(b"x")
+        os.utime(path, (1_120_406_790, 1_120_406_790))  # 2005-07-03 17:06:30 BST
+        when = modification_time(path, shift_days=1267)
+        assert (when.date().isoformat(), when.strftime("%H:%M:%S")) == (
+            "2008-12-21",
+            "17:06:30",
+        )
+        assert when.utcoffset() == timedelta(0)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
 
 
 def test_refuses_a_date_without_a_timezone(make_image):

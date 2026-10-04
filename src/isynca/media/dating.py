@@ -27,7 +27,7 @@ from __future__ import annotations
 import shutil
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO
 
@@ -78,9 +78,17 @@ def dated_path(path: Path) -> Path:
     return path.with_name(f"{path.stem}{DATED_SUFFIX}{path.suffix}")
 
 
-def modification_time(path: Path) -> datetime:
-    """Return ``path``'s modification time in the local timezone."""
-    return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).astimezone()
+def modification_time(path: Path, shift_days: int = 0) -> datetime:
+    """Return ``path``'s modification time in the local timezone.
+
+    ``shift_days`` moves it by whole days on the wall clock, for a camera
+    whose date was set wrong but whose time was right: the time of day stays
+    put even when daylight saving starts or ends in between.
+    """
+    local = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).astimezone()
+    if not shift_days:
+        return local
+    return (local.replace(tzinfo=None) + timedelta(days=shift_days)).astimezone()
 
 
 def write_date(media: MediaFile, when: datetime, *, dry_run: bool = False) -> DateFix:

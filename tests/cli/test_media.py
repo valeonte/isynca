@@ -230,7 +230,7 @@ def test_fix_date_stamps_undated_files_from_their_modification_time(
     expected = modification_time(undated)
     assert (
         f"Wrote {dated_path(undated)} (taken {expected:%Y-%m-%d %H:%M %z}, "
-        f"from the modification time)" in result.output
+        f"from its modification time)" in result.output
     )
     assert exif_taken(dated_path(undated)) == f"{expected:%Y:%m:%d %H:%M:%S}"
     assert "Skipped" in result.output
@@ -365,7 +365,7 @@ def test_fix_converts_dates_and_skips_as_each_file_needs(invoke, fix_folder):
 
     assert (
         f"Converted {fix_folder / 'SSL12779.AVI'} → SSL12779_converted.mp4 "
-        f"(taken 2005-07-20 09:56, from modification time)" in out
+        f"(taken 2005-07-20 09:56 +0000, from its modification time)" in out
     )
     assert (fix_folder / "SSL12779_converted.mp4").exists()
     assert f"Converted {fix_folder / 'old.bmp'} → old_converted.jpg" in out
@@ -537,7 +537,7 @@ def test_fix_date_reads_the_date_from_the_name(invoke, tmp_path, make_image):
         "--timezone", "Europe/Athens", str(path),
     )  # fmt: skip
     assert result.exit_code == 0, result.output
-    assert "(taken 2006-06-30 20:47 +0300, from the name)" in result.output
+    assert "(taken 2006-06-30 20:47 +0300, from its name)" in result.output
     output = dated_path(path)
     assert exif_taken(output) == "2006:06:30 20:47:00"
     with Image.open(output) as image:
@@ -633,3 +633,92 @@ def test_refuses_unusable_date_options(invoke, capture_avi, command, args, compl
     result = invoke("media", command, *args, str(capture_avi))
     assert result.exit_code == 2
     assert complaint in result.output
+
+
+# --- shifting dates ----------------------------------------------------------
+
+
+@pytest.fixture
+def london(monkeypatch):
+    """Run in UK time, where July and December differ by an hour."""
+    monkeypatch.setenv("TZ", "Europe/London")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def test_fix_shifts_the_modification_time_keeping_its_time_of_day(
+    invoke, tmp_path, ffprobe_reports, ffmpeg, london
+):
+    """The Kriti case: July 2005 on the camera, December 2008 in truth."""
+    avi = tmp_path / "SSL12724.AVI"
+    avi.write_bytes(b"RIFF")
+    os.utime(avi, (1_120_406_790, 1_120_406_790))  # 2005-07-03 17:06:30 BST
+    ffprobe_reports({avi.name: XVID_AVI})
+    instances = ffmpeg()
+
+    result = invoke("media", "fix", "--shift-date-days", "1267", str(avi))
+    assert result.exit_code == 0, result.output
+    assert (
+        "(taken 2008-12-21 17:06 +0000, from its modification time, "
+        "moved +1267 days)" in result.output
+    )
+    assert "creation_time=2008-12-21T17:06:30Z" in instances[0].command
+
+
+def test_fix_shifts_a_files_own_date(invoke, tmp_path, ffprobe_reports, ffmpeg):
+    mkv = tmp_path / "clip.mkv"
+    mkv.write_bytes(b"x")
+    ffprobe_reports(
+        {
+            mkv.name: {
+                "format": {
+                    "format_name": "matroska,webm",
+                    "tags": {"creation_time": "2019-04-05T06:07:08Z"},
+                },
+                "streams": [{"codec_type": "video", "codec_name": "vp9"}],
+            }
+        }
+    )
+    instances = ffmpeg()
+    result = invoke("media", "fix", "--shift-date-days", "-10", str(mkv))
+    assert result.exit_code == 0, result.output
+    assert (
+        "(taken 2019-03-26 06:07, from its own date, moved -10 days)" in result.output
+    )
+    assert "creation_time=2019-03-26T06:07:08Z" in instances[0].command
+
+
+def test_fix_date_shifts_a_date_read_from_the_name(invoke, tmp_path, make_image):
+    path = make_image("scan.06-06-30_20-47.00.jpg")
+    result = invoke(
+        "media", "fix-date", "--date-from-name", CAPTURE,
+        "--timezone", "Europe/Athens", "--shift-date-days", "180", str(path),
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    # Late December is winter in Athens: same 20:47, an hour less offset.
+    assert "(taken 2006-12-27 20:47 +0200, from its name, moved +180 days)" in (
+        result.output
+    )
+    assert exif_taken(dated_path(path)) == "2006:12:27 20:47:00"
+
+
+def test_fix_date_does_not_shift_a_file_that_keeps_its_date(
+    invoke, tmp_path, make_image
+):
+    path = make_image("phone.jpg", original="2023:07:14 12:34:56")
+    result = invoke("media", "fix-date", "--shift-date-days", "5", str(path))
+    assert result.exit_code == 0, result.output
+    assert "already taken 2023-07-14 12:34" in result.output
+    assert not dated_path(path).exists()
+
+
+@pytest.mark.parametrize("command", ["fix", "fix-date"])
+def test_a_shift_cannot_be_combined_with_a_date(invoke, capture_avi, command):
+    result = invoke(
+        "media", command, "--date", "2008-12-21T17:06",
+        "--shift-date-days", "1267", str(capture_avi),
+    )  # fmt: skip
+    assert result.exit_code == 2
+    assert "cannot be combined with --date" in result.output

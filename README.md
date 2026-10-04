@@ -401,6 +401,25 @@ offset such as `+03:00`; without it, this machine's zone is used. It also
 applies to a `--date` given without an offset. `--date` and
 `--date-from-name` cannot be combined.
 
+## Shifting a camera's wrong date
+
+When a camera's date was set wrong but its clock was right, every date it
+produced is off by the same number of days. `--shift-date-days N`, on both
+`fix` and `fix-date`, moves whatever date would be written by N days, back
+if negative:
+
+```bash
+# the camera said 2005-07-03 for what was really 2008-12-21: 1267 days on
+isynca media fix --shift-date-days 1267 Videos/200901Kriti/
+```
+
+It applies to whichever date is chosen -- the file's own when it is
+converted, one read from its name, or the modification time -- and moves it
+on the wall clock, so 17:06 in July stays 17:06 in December even though
+daylight saving has ended in between. Files that already have a date and
+need no converting are still skipped, since nothing is written to them. It
+cannot be combined with `--date`; give the right date instead.
+
 ## Giving undated files a date
 
 A file with no date taken inside it lands in iCloud Photos on the day it was

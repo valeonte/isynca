@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -70,8 +70,12 @@ class NamePattern:
             raise ValueError("needs at least a year (%Y or %y), a month and a day")
         return cls(pattern, zone, re.compile("".join(parts)))
 
-    def date_in(self, path: Path) -> datetime | None:
-        """Return the date in ``path``'s name, or ``None`` if there is none."""
+    def date_in(self, path: Path, shift_days: int = 0) -> datetime | None:
+        """Return the date in ``path``'s name, or ``None`` if there is none.
+
+        ``shift_days`` moves it by whole days before its zone is attached, so
+        the time of day survives a daylight-saving change in between.
+        """
         match = self._search.search(path.name)
         if match is None:
             return None
@@ -81,6 +85,7 @@ class NamePattern:
         except ValueError:
             # Digits in the right places that make no date, such as month 13.
             return None
+        naive += timedelta(days=shift_days)
         if self.zone is not None:
             return naive.replace(tzinfo=self.zone)
         return naive.astimezone()

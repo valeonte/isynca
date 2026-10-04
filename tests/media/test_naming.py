@@ -78,3 +78,11 @@ def test_parses_a_zone_name():
 def test_refuses_what_is_neither(bad):
     with pytest.raises(ValueError, match="neither an offset"):
         parse_timezone(bad)
+
+
+def test_a_shift_keeps_the_time_of_day_across_daylight_saving():
+    pattern = NamePattern.parse(CAPTURE, ATHENS)
+    found = pattern.date_in(Path("capture3.06-06-30_20-47.00.avi"), shift_days=180)
+    assert found == datetime(2006, 12, 27, 20, 47, tzinfo=ATHENS)
+    assert found is not None
+    assert found.utcoffset() == timedelta(hours=2)
