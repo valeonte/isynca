@@ -658,13 +658,33 @@ def test_fix_shifts_the_modification_time_keeping_its_time_of_day(
     ffprobe_reports({avi.name: XVID_AVI})
     instances = ffmpeg()
 
-    result = invoke("media", "fix", "--shift-date-days", "1267", str(avi))
+    result = invoke("media", "fix", "--shift-date", "1267", str(avi))
     assert result.exit_code == 0, result.output
     assert (
         "(taken 2008-12-21 17:06 +0000, from its modification time, "
         "moved +1267 days)" in result.output
     )
     assert "creation_time=2008-12-21T17:06:30Z" in instances[0].command
+
+
+def test_fix_shifts_the_modification_time_by_days_hours_and_minutes(
+    invoke, tmp_path, ffprobe_reports, ffmpeg, london
+):
+    """A camera both on the wrong day and 2h23m fast."""
+    avi = tmp_path / "SSL12861.AVI"
+    avi.write_bytes(b"RIFF")
+    os.utime(avi, (1_122_969_862, 1_122_969_862))  # 2005-08-02 09:04:22 BST
+    ffprobe_reports({avi.name: XVID_AVI})
+    instances = ffmpeg()
+
+    result = invoke("media", "fix", "--shift-date", "1268.21:37", str(avi))
+    assert result.exit_code == 0, result.output
+    # 08:41 in Athens, which is two hours ahead of London in January.
+    assert (
+        "(taken 2009-01-22 06:41 +0000, from its modification time, "
+        "moved +1268.21:37)" in result.output
+    )
+    assert "creation_time=2009-01-22T06:41:22Z" in instances[0].command
 
 
 def test_fix_shifts_a_files_own_date(invoke, tmp_path, ffprobe_reports, ffmpeg):
@@ -682,7 +702,7 @@ def test_fix_shifts_a_files_own_date(invoke, tmp_path, ffprobe_reports, ffmpeg):
         }
     )
     instances = ffmpeg()
-    result = invoke("media", "fix", "--shift-date-days", "-10", str(mkv))
+    result = invoke("media", "fix", "--shift-date", "-10", str(mkv))
     assert result.exit_code == 0, result.output
     assert (
         "(taken 2019-03-26 06:07, from its own date, moved -10 days)" in result.output
@@ -694,7 +714,7 @@ def test_fix_date_shifts_a_date_read_from_the_name(invoke, tmp_path, make_image)
     path = make_image("scan.06-06-30_20-47.00.jpg")
     result = invoke(
         "media", "fix-date", "--date-from-name", CAPTURE,
-        "--timezone", "Europe/Athens", "--shift-date-days", "180", str(path),
+        "--timezone", "Europe/Athens", "--shift-date", "180", str(path),
     )  # fmt: skip
     assert result.exit_code == 0, result.output
     # Late December is winter in Athens: same 20:47, an hour less offset.
@@ -708,17 +728,24 @@ def test_fix_date_does_not_shift_a_file_that_keeps_its_date(
     invoke, tmp_path, make_image
 ):
     path = make_image("phone.jpg", original="2023:07:14 12:34:56")
-    result = invoke("media", "fix-date", "--shift-date-days", "5", str(path))
+    result = invoke("media", "fix-date", "--shift-date", "5", str(path))
     assert result.exit_code == 0, result.output
     assert "already taken 2023-07-14 12:34" in result.output
     assert not dated_path(path).exists()
 
 
 @pytest.mark.parametrize("command", ["fix", "fix-date"])
+def test_refuses_a_shift_it_cannot_read(invoke, capture_avi, command):
+    result = invoke("media", command, "--shift-date", "3 days", str(capture_avi))
+    assert result.exit_code == 2
+    assert "is not a shift" in result.output
+
+
+@pytest.mark.parametrize("command", ["fix", "fix-date"])
 def test_a_shift_cannot_be_combined_with_a_date(invoke, capture_avi, command):
     result = invoke(
         "media", command, "--date", "2008-12-21T17:06",
-        "--shift-date-days", "1267", str(capture_avi),
+        "--shift-date", "1267", str(capture_avi),
     )  # fmt: skip
     assert result.exit_code == 2
     assert "cannot be combined with --date" in result.output

@@ -12,7 +12,9 @@ from isynca.media.capture import read_container_date, read_exif_date
 from isynca.media.dating import (
     _splice_exif,
     dated_path,
+    describe_shift,
     modification_time,
+    parse_shift,
     write_date,
 )
 from isynca.media.types import MediaFile, MediaKind
@@ -73,7 +75,7 @@ def test_a_shifted_modification_time_keeps_its_time_of_day(tmp_path, monkeypatch
         path = tmp_path / "a.avi"
         path.write_bytes(b"x")
         os.utime(path, (1_120_406_790, 1_120_406_790))  # 2005-07-03 17:06:30 BST
-        when = modification_time(path, shift_days=1267)
+        when = modification_time(path, timedelta(days=1267))
         assert (when.date().isoformat(), when.strftime("%H:%M:%S")) == (
             "2008-12-21",
             "17:06:30",
@@ -82,6 +84,43 @@ def test_a_shifted_modification_time_keeps_its_time_of_day(tmp_path, monkeypatch
     finally:
         monkeypatch.undo()
         time.tzset()
+
+
+@pytest.mark.parametrize(
+    ("text", "shift"),
+    [
+        ("1267", timedelta(days=1267)),
+        ("-10", timedelta(days=-10)),
+        ("+02:30", timedelta(hours=2, minutes=30)),
+        ("-2:30", -timedelta(hours=2, minutes=30)),
+        ("1267.21:37", timedelta(days=1267, hours=21, minutes=37)),
+        ("-1.06:00", -timedelta(hours=30)),
+        (" 0.00:05 ", timedelta(minutes=5)),
+    ],
+)
+def test_reads_a_shift(text, shift):
+    assert parse_shift(text) == shift
+
+
+@pytest.mark.parametrize(
+    "bad", ["", "1.5", "3 days", "1267.21", "24:00", "1.12:60", "--1", "1:2:3"]
+)
+def test_refuses_what_is_not_a_shift(bad):
+    with pytest.raises(ValueError, match=repr(bad)):
+        parse_shift(bad)
+
+
+@pytest.mark.parametrize(
+    ("shift", "text"),
+    [
+        (timedelta(days=1267), "+1267 days"),
+        (timedelta(days=-10), "-10 days"),
+        (timedelta(days=1267, hours=21, minutes=37), "+1267.21:37"),
+        (-timedelta(hours=2, minutes=30), "-0.02:30"),
+    ],
+)
+def test_describes_a_shift_as_it_would_be_given(shift, text):
+    assert describe_shift(shift) == text
 
 
 def test_refuses_a_date_without_a_timezone(make_image):

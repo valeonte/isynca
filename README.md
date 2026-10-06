@@ -403,22 +403,34 @@ applies to a `--date` given without an offset. `--date` and
 
 ## Shifting a camera's wrong date
 
-When a camera's date was set wrong but its clock was right, every date it
-produced is off by the same number of days. `--shift-date-days N`, on both
-`fix` and `fix-date`, moves whatever date would be written by N days, back
-if negative:
+When a camera's clock was set wrong, every date it produced is off by the
+same amount. `--shift-date`, on both `fix` and `fix-date`, moves whatever
+date would be written by that amount, back if negative. A bare number is
+whole days; `D.HH:MM` or `HH:MM` adds hours and minutes:
 
 ```bash
 # the camera said 2005-07-03 for what was really 2008-12-21: 1267 days on
-isynca media fix --shift-date-days 1267 Videos/200901Kriti/
+isynca media fix --shift-date 1267 Videos/200901Kriti/
+
+# the camera said 2005-08-02 09:04 for what was really 2009-01-22 06:41
+isynca media fix --shift-date 1268.21:37 "Videos/2009Orkomosia Despoinas/"
+
+# and one that was 2 hours 30 minutes fast
+isynca media fix --shift-date -02:30 Videos/
 ```
+
+A leading `-` applies to the whole shift, so `-1.06:00` is thirty hours
+back. Hours go up to 23 and minutes up to 59; past that, use days.
 
 It applies to whichever date is chosen -- the file's own when it is
 converted, one read from its name, or the modification time -- and moves it
 on the wall clock, so 17:06 in July stays 17:06 in December even though
-daylight saving has ended in between. Files that already have a date and
-need no converting are still skipped, since nothing is written to them. It
-cannot be combined with `--date`; give the right date instead.
+daylight saving has ended in between. Work out the shift on the clock the
+dates are shown in: `--dry-run` prints the date each file would get, so a
+shift can be checked against one file whose real time is known. Files that
+already have a date and need no converting are still skipped, since nothing
+is written to them. It cannot be combined with `--date`; give the right date
+instead.
 
 ## Giving undated files a date
 

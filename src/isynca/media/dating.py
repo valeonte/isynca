@@ -24,6 +24,7 @@ The original is never modified. The dated copy is written beside it as
 
 from __future__ import annotations
 
+import re
 import shutil
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -50,6 +51,9 @@ DATED_SUFFIX = "_dated"
 
 OFFSET_TIME_ORIGINAL = 0x9011
 OFFSET_TIME_DIGITIZED = 0x9012
+
+_SHIFT = re.compile(r"([+-]?)(?:(\d+)|(?:(\d+)\.)?(\d{1,2}):(\d{2}))")
+"""``D``, ``HH:MM`` or ``D.HH:MM``, optionally signed as a whole."""
 
 _JPEG_FORMATS = frozenset({"JPEG", "MPO"})
 _SOI = b"\xff\xd8"
@@ -78,17 +82,53 @@ def dated_path(path: Path) -> Path:
     return path.with_name(f"{path.stem}{DATED_SUFFIX}{path.suffix}")
 
 
-def modification_time(path: Path, shift_days: int = 0) -> datetime:
+def parse_shift(text: str) -> timedelta:
+    """Return the shift ``text`` gives: days, ``HH:MM``, or ``D.HH:MM``.
+
+    A leading ``-`` moves the whole shift back, so ``-1.06:00`` is thirty
+    hours back, not eighteen.
+
+    Raises:
+        ValueError: ``text`` is none of those, or its hours or minutes are
+            out of range.
+    """
+    match = _SHIFT.fullmatch(text.strip())
+    if match is None:
+        raise ValueError(
+            f"{text!r} is not a shift; expected days, HH:MM or D.HH:MM, "
+            "e.g. 1267, -02:30 or 1267.21:37"
+        )
+    sign, whole_days, days, hours, minutes = match.groups()
+    if whole_days is not None:
+        shift = timedelta(days=int(whole_days))
+    else:
+        if int(hours) > 23 or int(minutes) > 59:
+            raise ValueError(f"{text!r} has hours past 23 or minutes past 59")
+        shift = timedelta(days=int(days or 0), hours=int(hours), minutes=int(minutes))
+    return -shift if sign == "-" else shift
+
+
+def describe_shift(shift: timedelta) -> str:
+    """Return ``shift`` as it would be given: ``+1267 days`` or ``-0.02:30``."""
+    sign = "-" if shift < timedelta(0) else "+"
+    days, seconds = divmod(int(abs(shift).total_seconds()), 86_400)
+    if not seconds:
+        return f"{sign}{days} days"
+    hours, minutes = divmod(seconds // 60, 60)
+    return f"{sign}{days}.{hours:02d}:{minutes:02d}"
+
+
+def modification_time(path: Path, shift: timedelta = timedelta(0)) -> datetime:
     """Return ``path``'s modification time in the local timezone.
 
-    ``shift_days`` moves it by whole days on the wall clock, for a camera
-    whose date was set wrong but whose time was right: the time of day stays
-    put even when daylight saving starts or ends in between.
+    ``shift`` moves it on the wall clock, for a camera whose clock was set
+    wrong: a shift of whole days keeps the time of day put even when daylight
+    saving starts or ends in between.
     """
     local = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).astimezone()
-    if not shift_days:
+    if not shift:
         return local
-    return (local.replace(tzinfo=None) + timedelta(days=shift_days)).astimezone()
+    return (local.replace(tzinfo=None) + shift).astimezone()
 
 
 def write_date(media: MediaFile, when: datetime, *, dry_run: bool = False) -> DateFix:

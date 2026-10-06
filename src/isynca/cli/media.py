@@ -42,7 +42,9 @@ from isynca.media.convert import (
 from isynca.media.dating import (
     DATED_SUFFIX,
     dated_path,
+    describe_shift,
     modification_time,
+    parse_shift,
     write_date,
 )
 from isynca.media.naming import NamePattern, parse_timezone
@@ -73,12 +75,13 @@ DateFromNameOpt = Annotated[
     ),
 ]
 ShiftOpt = Annotated[
-    int,
+    str | None,
     typer.Option(
-        "--shift-date-days",
+        "--shift-date",
         help=(
-            "Move the date written by this many days, back if negative, "
-            "keeping its time of day: for a camera whose date was set wrong."
+            "Move the date written by this much, back if negative: whole days "
+            "such as 1267, or D.HH:MM such as 1267.21:37 or -02:30. For a "
+            "camera whose clock was set wrong."
         ),
         show_default=False,
     ),
@@ -272,7 +275,7 @@ def fix_date(
     ] = None,
     date_from_name: DateFromNameOpt = None,
     timezone: TimezoneOpt = None,
-    shift_date_days: ShiftOpt = 0,
+    shift_date: ShiftOpt = None,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Show what would be written, writing nothing."),
@@ -291,10 +294,11 @@ def fix_date(
     capture3.06-06-30_20-47.00.avi; a file whose name does not match is
     reported. --timezone says which zone such dates are in.
 
-    --shift-date-days moves the date written by whole days, keeping its time
-    of day, for a camera whose date was set wrong.
+    --shift-date moves the date written, by whole days such as 1267 or by
+    D.HH:MM such as 1267.21:37, for a camera whose clock was set wrong. It
+    moves the wall clock, so whole days keep the time of day.
     """
-    dating = _date_options(date, date_from_name, timezone, shift_date_days, sources)
+    dating = _date_options(date, date_from_name, timezone, shift_date, sources)
     app_ctx = get_context(ctx)
     scanner = build_scanner(app_ctx.config)
 
@@ -320,7 +324,7 @@ class _Dating:
 
     override: datetime | None = None
     names: NamePattern | None = None
-    shift: int = 0
+    shift: timedelta = timedelta(0)
 
 
 def _choose_date(
@@ -336,7 +340,7 @@ def _choose_date(
     if dating.override is not None:
         return dating.override, "the given date", False
     if own is not None:
-        when, origin = own + timedelta(days=dating.shift), "its own date"
+        when, origin = own + dating.shift, "its own date"
     elif dating.names is not None:
         found = dating.names.date_in(media.path, dating.shift)
         if found is None:
@@ -349,7 +353,7 @@ def _choose_date(
         when = modification_time(media.path, dating.shift)
         origin = "its modification time"
     if dating.shift:
-        origin += f", moved {dating.shift:+d} days"
+        origin += f", moved {describe_shift(dating.shift)}"
     return when, origin, own is not None
 
 
@@ -357,7 +361,7 @@ def _date_options(
     date: str | None,
     date_from_name: str | None,
     timezone: str | None,
-    shift: int,
+    shift_date: str | None,
     sources: list[Path],
 ) -> _Dating:
     """Return how the date options say dates should be chosen."""
@@ -365,11 +369,17 @@ def _date_options(
         raise typer.BadParameter(
             "cannot be combined with --date", param_hint="--date-from-name"
         )
-    if date is not None and shift:
+    if date is not None and shift_date is not None:
         raise typer.BadParameter(
             "cannot be combined with --date; give the right date instead",
-            param_hint="--shift-date-days",
+            param_hint="--shift-date",
         )
+    shift = timedelta(0)
+    if shift_date is not None:
+        try:
+            shift = parse_shift(shift_date)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--shift-date") from exc
     zone = None
     if timezone is not None:
         if date is None and date_from_name is None:
@@ -471,7 +481,7 @@ def fix(
     ] = None,
     date_from_name: DateFromNameOpt = None,
     timezone: TimezoneOpt = None,
-    shift_date_days: ShiftOpt = 0,
+    shift_date: ShiftOpt = None,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Show what would be written, writing nothing."),
@@ -491,10 +501,10 @@ def fix(
     replacing any date it already has, whether it is converted or only dated.
 
     --date-from-name reads the date of files that have none from their names
-    instead of using the modification time, and --shift-date-days moves
-    whatever date is written by whole days, both as with fix-date.
+    instead of using the modification time, and --shift-date moves whatever
+    date is written, both as with fix-date.
     """
-    dating = _date_options(date, date_from_name, timezone, shift_date_days, sources)
+    dating = _date_options(date, date_from_name, timezone, shift_date, sources)
     app_ctx = get_context(ctx)
     scanner = build_scanner(app_ctx.config)
 
