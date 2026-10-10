@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from isynca.ledger.hashing import hash_file
 from isynca.ledger.store import UploadStatus
@@ -114,6 +114,64 @@ def test_iter_plan_is_lazy(ledger, make_media):
     assert first.path == media.path
 
 
+def _record_unverified(ledger, media, *, age):
+    ledger.record_upload(
+        content_hash=hash_file(media.path),
+        size=media.size,
+        path=media.path,
+        status=UploadStatus.UNVERIFIED,
+        uploaded_at=datetime.now(UTC) - age,
+    )
+
+
+def test_settled_unverified_upload_is_planned_as_a_recheck(ledger, make_media):
+    """ICloud never confirmed it, so sending it again is the only way to ask."""
+    media = make_media(content=b"accepted but never named")
+    _record_unverified(ledger, media, age=timedelta(days=3))
+    decision = Planner(ledger).evaluate(media)
+
+    assert isinstance(decision, PlannedUpload)
+    assert decision.is_recheck
+    assert decision.previous is not None
+    assert decision.previous.status is UploadStatus.UNVERIFIED
+
+
+def test_fresh_unverified_upload_is_left_to_settle(ledger, make_media):
+    """Re-sending while Apple may still be ingesting risks a second copy."""
+    media = make_media(content=b"just sent")
+    _record_unverified(ledger, media, age=timedelta(minutes=5))
+    decision = Planner(ledger).evaluate(media)
+
+    assert isinstance(decision, SkippedUpload)
+    assert decision.reason is SkipReason.ALREADY_UPLOADED
+
+
+def test_recheck_waits_for_the_configured_grace(ledger, make_media):
+    media = make_media(content=b"sent a while ago")
+    _record_unverified(ledger, media, age=timedelta(minutes=5))
+    planner = Planner(ledger, recheck_after=timedelta(minutes=1))
+
+    assert isinstance(planner.evaluate(media), PlannedUpload)
+
+
+def test_confirmed_upload_is_never_rechecked(ledger, make_media):
+    media = make_media(content=b"settled long ago")
+    ledger.record_upload(
+        content_hash=hash_file(media.path),
+        size=media.size,
+        path=media.path,
+        status=UploadStatus.CONFIRMED,
+        uploaded_at=datetime.now(UTC) - timedelta(days=30),
+    )
+    assert isinstance(Planner(ledger).evaluate(media), SkippedUpload)
+
+
+def test_new_file_is_not_a_recheck(ledger, make_media):
+    decision = Planner(ledger).evaluate(make_media(content=b"brand new"))
+    assert isinstance(decision, PlannedUpload)
+    assert not decision.is_recheck
+
+
 def test_empty_plan():
     plan = UploadPlan()
     assert plan.total == 0
@@ -197,3 +255,28 @@ def test_real_files_are_read_by_default(ledger, make_image, make_media):
     )
     planner = Planner(ledger, require_capture_date=True)
     assert isinstance(planner.evaluate(media), PlannedUpload)
+
+
+def test_recheck_is_held_to_the_date_requirement(ledger, make_media):
+    """If the first upload never landed, the re-check is what creates the asset."""
+    media = make_media(content=b"undated but sent")
+    _record_unverified(ledger, media, age=timedelta(days=1))
+    planner = Planner(ledger, require_capture_date=True, date_reader=lambda _: None)
+    decision = planner.evaluate(media)
+
+    assert isinstance(decision, SkippedUpload)
+    assert decision.reason is SkipReason.MISSING_DATE
+
+
+def test_dated_recheck_passes_the_date_requirement(ledger, make_media):
+    media = make_media(content=b"dated and sent")
+    _record_unverified(ledger, media, age=timedelta(days=1))
+    planner = Planner(
+        ledger,
+        require_capture_date=True,
+        date_reader=lambda _: datetime(2016, 3, 1, tzinfo=UTC),
+    )
+    decision = planner.evaluate(media)
+
+    assert isinstance(decision, PlannedUpload)
+    assert decision.is_recheck

@@ -1,10 +1,12 @@
+from datetime import timedelta
+
 import pytest
 from pyicloud.exceptions import PyiCloudAPIResponseException
 
 from isynca.cli.app import app
 from isynca.errors import TwoFactorRequiredError
 from isynca.ledger.store import Ledger
-from tests.fakes.icloud import FakeSession
+from tests.fakes.icloud import FakeRegistration, FakeSession
 from tests.media.conftest import box, mvhd
 
 ACCOUNT = "tester@example.com"
@@ -274,6 +276,41 @@ def test_archive_holds_unverified_uploads(invoke, tree, fake_icloud, tmp_path):
     assert not target.exists()
     assert (tree / "trip" / "a.mp4").exists()
     assert "Held (iCloud not confirmed)" in result.output
+
+
+def test_archive_rechecks_settled_unverified_uploads(
+    invoke, tree, fake_icloud, tmp_path, data_dir
+):
+    """A file iCloud never confirmed is re-sent, and moved once it answers."""
+    fake_icloud.photos_service.upload_results = [None, None, None]
+    invoke("--apple-id", ACCOUNT, "photos", "upload", str(tree))
+    with Ledger(data_dir / "ledger.db") as ledger:
+        for record in ledger.records():
+            ledger.record_upload(
+                content_hash=record.content_hash,
+                size=record.size,
+                path=record.first_path,
+                status=record.status,
+                uploaded_at=record.uploaded_at - timedelta(days=1),
+            )
+    fake_icloud.photos_service.uploaded.clear()
+    fake_icloud.photos_service.upload_results = [
+        FakeRegistration(cplMaster=f"m{n}", cplAsset=f"a{n}", duplicate=True)
+        for n in range(3)
+    ]
+
+    target = tmp_path / "archive"
+    result = invoke(
+        "--apple-id", ACCOUNT, "photos", "archive", str(tree), "--to", str(target)
+    )
+
+    assert result.exit_code == 0
+    assert uploads(fake_icloud) == ["a.mp4", "b.mov", "photo.jpg"]
+    assert _summary_value(result.output, "Re-checked (was not indexed)") == "3"
+    assert _summary_value(result.output, "Held (iCloud not confirmed)") == "0"
+    assert (target / "trip" / "a.mp4").is_file()
+    with Ledger(data_dir / "ledger.db") as ledger:
+        assert ledger.stats()["duplicate"] == 3
 
 
 def test_archive_does_not_overwrite_at_the_target(invoke, tree, fake_icloud, tmp_path):

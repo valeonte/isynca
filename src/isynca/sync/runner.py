@@ -113,8 +113,12 @@ class UploadRunner:
         if self._on_start is not None:
             self._on_start(item)
 
+        if item.is_recheck:
+            report.record_recheck()
+
         if self._dry_run:
-            LOGGER.info("Would upload %s", item.path)
+            verb = "re-check" if item.is_recheck else "upload"
+            LOGGER.info("Would %s %s", verb, item.path)
             # A preview assumes the upload would succeed, so the archive step
             # it reports is the one a real run would take.
             self._archive(item.media, UploadStatus.CONFIRMED, report)
@@ -138,7 +142,10 @@ class UploadRunner:
             asset_id=outcome.asset_id,
         )
         report.record_status(outcome.status, item.size)
-        LOGGER.debug("%s: %s", item.path.name, outcome.status)
+        if item.is_recheck:
+            LOGGER.info("Re-checked %s: %s", item.path, outcome.status)
+        else:
+            LOGGER.debug("%s: %s", item.path.name, outcome.status)
         self._archive(item.media, outcome.status, report)
         self._notify(item, outcome.status)
 

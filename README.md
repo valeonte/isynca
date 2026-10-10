@@ -105,7 +105,10 @@ readers:
 
 A held-back file is never uploaded and, in archive mode, never moved. Files
 already in iCloud skip the check entirely: blocking them would achieve nothing
-and would strand them in the source folder forever.
+and would strand them in the source folder forever. A re-check of an
+unverified upload (see below) is *not* exempt: if the first upload never
+landed, the re-check is what creates the asset, so an undated file is held
+back like any new one.
 
 ## Archive mode
 
@@ -126,8 +129,8 @@ Three rules make this safe to point at real files:
 
 - **A file moves only when iCloud is known to hold it** — a created asset or a
   reported duplicate. An upload that was accepted but not yet indexed
-  (`unverified`) keeps its local copy and is counted as *held*; a later run
-  re-checks it.
+  (`unverified`) keeps its local copy and is counted as *held*. A later run
+  re-checks it (see [Re-checking unverified uploads](#re-checking-unverified-uploads)).
 - **Files already in iCloud are moved too**, not just ones uploaded on this
   run. Without that the source folder would never drain — everything sent by an
   earlier run would be skipped and left sitting there.
@@ -506,8 +509,32 @@ across.
 Records carry one of three statuses. `confirmed` means iCloud returned the
 created asset. `duplicate` means iCloud reported it already held that content.
 `unverified` means the bytes were accepted but CloudKit had not finished
-indexing before the hydration timeout — that is a success, not a failure, and it
-still suppresses a retry.
+indexing before the hydration timeout, or Apple returned no record names. That
+is a success, not a failure, and it suppresses an immediate retry.
+
+### Re-checking unverified uploads
+
+An `unverified` record is not final. Once it is an hour old, the next run sends
+the file again instead of skipping it. iCloud has no lookup by content or by
+filename, and an unverified record has no record names to look up, so the
+upload itself is the check: Apple de-duplicates on content when the file is
+registered.
+
+- If the first upload landed, iCloud answers *duplicate* and nothing new is
+  created.
+- If it did not, the file is uploaded properly and recorded as `confirmed`.
+- If Apple again names no records, the record stays `unverified` and the next
+  run tries again.
+
+The ledger row is updated with the new status, so in archive mode a
+re-checked file that resolves to `confirmed` or `duplicate` is moved on the
+same run. A failed re-check leaves the old record as it was. The summary counts
+these files under *Re-checked (was not indexed)*; each one also appears under
+*Uploaded* or *Already in iCloud*, depending on how iCloud answered.
+
+The hour of grace is there because Apple may still be ingesting a file shortly
+after accepting it, and a second copy sent during that window might not be
+recognised as the same content.
 
 ### Retries
 

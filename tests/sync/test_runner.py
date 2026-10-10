@@ -65,6 +65,70 @@ def test_duplicate_result_is_recorded(session, ledger, make_media):
     assert ledger.lookup(hash_file(media.path)).status is UploadStatus.DUPLICATE
 
 
+def recheck_plan(ledger, media):
+    """Return a plan re-checking ``media``, recorded as unverified."""
+    digest = hash_file(media.path)
+    previous = ledger.record_upload(
+        content_hash=digest,
+        size=media.size,
+        path=media.path,
+        status=UploadStatus.UNVERIFIED,
+    )
+    plan = UploadPlan()
+    plan.pending.append(
+        PlannedUpload(media=media, content_hash=digest, previous=previous)
+    )
+    return plan
+
+
+def test_recheck_of_content_icloud_holds_becomes_a_duplicate(
+    session, ledger, make_media
+):
+    session.photos_service.upload_results = [
+        FakeRegistration(cplMaster="m1", cplAsset="a1", duplicate=True)
+    ]
+    media = make_media()
+    report = build(session, ledger).run(recheck_plan(ledger, media))
+
+    assert report.rechecked == 1
+    assert report.duplicate == 1
+    stored = ledger.lookup(hash_file(media.path))
+    assert stored.status is UploadStatus.DUPLICATE
+    assert stored.master_id == "m1"
+
+
+def test_recheck_that_was_never_stored_is_uploaded_properly(
+    session, ledger, make_media
+):
+    media = make_media()
+    report = build(session, ledger).run(recheck_plan(ledger, media))
+
+    assert report.rechecked == 1
+    assert report.confirmed == 1
+    assert ledger.lookup(hash_file(media.path)).status is UploadStatus.CONFIRMED
+
+
+def test_failed_recheck_keeps_the_old_record(session, ledger, make_media):
+    session.photos_service.upload_results = [
+        cloudkit_error("400", payload={"response": {"status": 400}})
+    ]
+    media = make_media()
+    report = build(session, ledger).run(recheck_plan(ledger, media))
+
+    assert report.rechecked == 1
+    assert len(report.failures) == 1
+    assert ledger.lookup(hash_file(media.path)).status is UploadStatus.UNVERIFIED
+
+
+def test_dry_run_counts_the_recheck_but_sends_nothing(session, ledger, make_media):
+    media = make_media()
+    report = build(session, ledger, dry_run=True).run(recheck_plan(ledger, media))
+
+    assert report.rechecked == 1
+    assert session.photos_service.uploaded == []
+    assert ledger.lookup(hash_file(media.path)).status is UploadStatus.UNVERIFIED
+
+
 def test_start_hook_fires_before_the_upload(session, ledger, make_media):
     """A bar told only about finished files names the wrong one while it works."""
     events = []
@@ -348,6 +412,31 @@ def test_already_uploaded_but_unverified_is_held(session, ledger, tmp_path, make
     )
 
     report = archiving_runner(session, ledger, target).run(plan)
+
+    assert report.held_in_place == 1
+    assert media.path.exists()
+
+
+def test_settled_recheck_is_moved_on_the_same_run(
+    session, ledger, tmp_path, make_media
+):
+    session.photos_service.upload_results = [
+        FakeRegistration(cplMaster="m1", cplAsset="a1", duplicate=True)
+    ]
+    target = tmp_path / "archive"
+    media = make_media(name="clip.mp4")
+    report = archiving_runner(session, ledger, target).run(recheck_plan(ledger, media))
+
+    assert report.moved == 1
+    assert report.held_in_place == 0
+    assert (target / "clip.mp4").is_file()
+
+
+def test_recheck_still_unverified_stays_held(session, ledger, tmp_path, make_media):
+    session.photos_service.upload_results = [None]
+    target = tmp_path / "archive"
+    media = make_media(name="clip.mp4")
+    report = archiving_runner(session, ledger, target).run(recheck_plan(ledger, media))
 
     assert report.held_in_place == 1
     assert media.path.exists()

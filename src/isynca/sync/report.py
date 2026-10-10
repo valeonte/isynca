@@ -24,6 +24,7 @@ class RunReport:
     confirmed: int = 0
     unverified: int = 0
     duplicate: int = 0
+    rechecked: int = 0
     skipped_already: int = 0
     skipped_unreadable: int = 0
     skipped_missing_date: int = 0
@@ -70,6 +71,10 @@ class RunReport:
             self.duplicate += 1
         self.uploaded_bytes += size
 
+    def record_recheck(self) -> None:
+        """Count one unverified upload sent again to settle its status."""
+        self.rechecked += 1
+
     def record_skip(self, reason: SkipReason) -> None:
         """Count one skipped file."""
         if reason is SkipReason.ALREADY_UPLOADED:
@@ -112,6 +117,7 @@ class RunReport:
             ("Uploaded", str(self.confirmed)),
             ("Uploaded (not yet indexed)", str(self.unverified)),
             ("Already in iCloud", str(self.duplicate)),
+            ("Re-checked (was not indexed)", str(self.rechecked)),
             ("Skipped (in ledger)", str(self.skipped_already)),
             ("Skipped (unreadable)", str(self.skipped_unreadable)),
             ("Skipped (no capture date)", str(self.skipped_missing_date)),
