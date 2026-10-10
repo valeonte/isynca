@@ -65,10 +65,13 @@ ignore = [
 "src/isynca/cli/*" = ["PLR0917"]
 # ISO-BMFF field widths are 4 and 8 bytes by specification. Naming those
 # numbers hides what the parser is doing rather than explaining it.
+"src/isynca/media/bmff.py" = ["PLR2004"]
 "src/isynca/media/capture.py" = ["PLR2004"]
+"src/isynca/media/dating.py" = ["PLR2004"]
 # EXIF timestamps carry no timezone, so the expected values here are naive on
 # purpose -- that is exactly what these assertions are checking.
 "tests/media/test_capture.py" = ["DTZ001"]
+"tests/media/test_probe.py" = ["DTZ001"]
 # Test stubs routinely accept arguments they ignore; that is the point of a
 # stub, not an oversight.
 "tests/*" = [

@@ -33,6 +33,20 @@ def no_keyring(monkeypatch):
     return store
 
 
+@pytest.fixture(autouse=True)
+def plain_output(monkeypatch):
+    """Keep every CLI run's output free of colour codes, wherever it runs.
+
+    Typer forces a styled terminal when it sees GITHUB_ACTIONS, FORCE_COLOR
+    or PY_COLORS, decided once at import. Its error panels then wrap option
+    names in escape codes, splitting "with --date or" apart, so a message
+    check that passes locally fails in CI. FORCE_COLOR does the same to
+    isynca's own consoles, which read it as each run creates them.
+    """
+    monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+
 @pytest.fixture
 def invoke(runner, data_dir, monkeypatch):
     """Invoke the CLI with an isolated data dir and no ambient config."""

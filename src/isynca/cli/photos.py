@@ -101,7 +101,7 @@ def scan(
         exclude=tuple(exclude) if exclude else None,
         follow_symlinks=follow_symlinks or None,
     )
-    scanner = _build_scanner(config)
+    scanner = build_scanner(config)
     checking_dates = config.require_date_taken
 
     table = Table(title="Discovered media")
@@ -227,7 +227,7 @@ def _run(
 ) -> None:
     """Scan, plan, upload, and optionally archive, then report."""
     console = app_ctx.console
-    scanner = _build_scanner(config)
+    scanner = build_scanner(config)
 
     with Ledger(config.ledger_path) as ledger:
         plan = _build_plan(
@@ -288,7 +288,7 @@ def _prune(
     report.record_prune(len(emptied))
 
 
-def _build_scanner(config: Config) -> Scanner:
+def build_scanner(config: Config) -> Scanner:
     """Build a scanner from resolved settings.
 
     Turning both kinds off leaves nothing to look for; the scanner rejects

@@ -34,6 +34,10 @@ pixi run isynca photos upload ~/Media
 | `isynca ledger list` | List recorded uploads |
 | `isynca ledger forget PATH` | Drop one file's record so it uploads again |
 | `isynca ledger prune` | Remove cache rows for files that no longer exist |
+| `isynca media check SRC...` | Show what files hold and whether iCloud Photos will take them |
+| `isynca media fix SRC...` | Convert what iCloud will not take, date what lacks a date |
+| `isynca media fix-date SRC... [--date D]` | Write a dated copy of files with no date taken |
+| `isynca media rotate FILE... --clockwise N` | Write an upright copy of sideways videos, losslessly |
 
 ## Signing in once
 
@@ -286,6 +290,204 @@ isynca files put notes.md --to Notes
 `files list` shows the raw node type alongside each entry, which is how the
 app-library and scratch-folder behaviour above was established in the first
 place.
+
+## Checking media before uploading
+
+`media check` reports what each file really holds -- container, codecs,
+size, date taken -- and guesses how iCloud Photos will treat it:
+
+```bash
+isynca media check "Videos/2009Ntafy Xrisoula/SSL12779.AVI"
+```
+
+```
+convert    Videos/2009Ntafy Xrisoula/SSL12779.AVI
+  AVI · mpeg4 (Advanced Simple Profile) · mp2 · 640x480 · no date taken
+  - AVI is not taken; iCloud wants MP4 or MOV
+  - MPEG-4 Part 2 video in Advanced Simple Profile (XviD/DivX style) does not play on Apple devices
+  - mp2 audio does not play on Apple devices
+```
+
+It takes folders too, with the same `--no-videos`, `--no-images` and
+`--exclude` switches as `photos scan`. Each file gets one of four verdicts:
+
+| Verdict | Meaning |
+| --- | --- |
+| `ok` | MP4/MOV with H.264, HEVC or ProRes; JPEG, HEIC, PNG, GIF, TIFF, WebP |
+| `unsure` | Plays on some Apple devices only: H.263, DV, AV1, 8-bit PCM audio, AVIF, RAW |
+| `convert` | Will not be taken or will not play: AVI, MPG, WMV, MKV, XviD/DivX, MPEG-1/2, Motion JPEG, MPEG-4 Part 2, AMR audio, and H.264 carrying the colour tags old Motion JPEG cameras write |
+| `unreadable` | Damaged, or not what its name says -- such as a JPEG thumbnail saved as `.MOV` |
+
+The verdicts are informed guesses, not Apple's word: an upload that iCloud
+accepts can still fail to play. The quickest way to settle an `unsure` file is
+to upload one and look at it on a phone.
+
+Files with no date taken inside them are counted too. iCloud dates an upload
+from its metadata, so those will most likely appear under the day they were
+uploaded.
+
+Videos are read with `ffprobe`, which comes with ffmpeg
+(`sudo apt install ffmpeg`); images need nothing extra.
+
+## Fixing media for iCloud
+
+`media fix` does whatever each file needs, judged as `media check` judges it:
+
+```bash
+isynca media fix --dry-run Videos/    # see what it would do
+isynca media fix Videos/
+```
+
+* **Files iCloud will not take** are converted into `NAME_converted.mp4`
+  (video) or `NAME_converted.jpg` (images). Video becomes H.264 with AAC
+  audio; streams that are already H.264/HEVC or AAC are copied untouched, so
+  a file that only needs a new container is just rewrapped. Interlaced video
+  is deinterlaced, and an incomplete colour description is completed: old
+  Motion JPEG cameras tag only the colour matrix, and iCloud refuses an
+  H.264 file carrying that with "unsupported for transcoding". Images become
+  JPEG at quality 95.
+* **Every converted file gets a date taken**: its own if it has one, or else
+  its modification time.
+* **Files that need no converting** but have no date taken get a dated copy,
+  `NAME_dated.EXT`, exactly as `fix-date` would write it.
+* **Unsure files** (H.263, DV or AV1 video, 8-bit PCM audio) are only dated.
+  `--convert-unsure` converts them too.
+* **Unreadable files** are reported and left alone.
+
+For a single file, `--date` gives the result that date instead -- whether it
+is converted or only dated, and even if it already has a date of its own:
+
+```bash
+isynca media fix --date 2022-08-20T15:00 "Videos/Eva furthest.mp4"
+```
+
+It is refused for a folder or more than one file, and an existing output is
+reported as an error rather than skipped.
+
+Originals are never modified, and outputs keep the original's modification
+time. A re-run skips files whose output already exists, and files an earlier
+run wrote, so an interrupted run over a big folder can simply be started
+again. Re-encoding runs at roughly twice real time for old 640x480
+camera video. Needs ffmpeg.
+
+The new files sit beside the originals, so upload only the fixed ones -- or
+move the originals elsewhere first.
+
+## Dates from file names
+
+Some recorders never write a date into the file but put it in the name, and
+copying the files around has long since replaced their modification times.
+`--date-from-name` reads the date from the name instead, on both `fix` and
+`fix-date`:
+
+```bash
+# capture3.06-06-30_20-47.00.avi was taken on 30 June 2006 at 20:47 in Greece
+isynca media fix --date-from-name '%y-%m-%d_%H-%M.%S' --timezone Europe/Athens Videos/Shakira/
+```
+
+The pattern uses strftime's numeric directives -- `%Y %y %m %d %H %M %S`,
+with `%%` for a literal percent sign -- and needs at least a year, a month
+and a day. It is looked for anywhere in the name, so the `capture3.` around
+it need not be spelt out.
+
+It only stands in for the modification time: a file that has a date of its
+own keeps it. A file whose name does not match is reported rather than given
+the modification time, since the pattern was asked for because those are
+wrong.
+
+A name carries no timezone. `--timezone` takes a zone name such as
+`Europe/Athens`, which gets daylight saving right for each date, or a fixed
+offset such as `+03:00`; without it, this machine's zone is used. It also
+applies to a `--date` given without an offset. `--date` and
+`--date-from-name` cannot be combined.
+
+## Shifting a camera's wrong date
+
+When a camera's clock was set wrong, every date it produced is off by the
+same amount. `--shift-date`, on both `fix` and `fix-date`, moves whatever
+date would be written by that amount, back if negative. A bare number is
+whole days; `D.HH:MM` or `HH:MM` adds hours and minutes:
+
+```bash
+# the camera said 2005-07-03 for what was really 2008-12-21: 1267 days on
+isynca media fix --shift-date 1267 Videos/200901Kriti/
+
+# the camera said 2005-08-02 09:04 for what was really 2009-01-22 06:41
+isynca media fix --shift-date 1268.21:37 "Videos/2009Orkomosia Despoinas/"
+
+# and one that was 2 hours 30 minutes fast
+isynca media fix --shift-date -02:30 Videos/
+```
+
+A leading `-` applies to the whole shift, so `-1.06:00` is thirty hours
+back. Hours go up to 23 and minutes up to 59; past that, use days.
+
+It applies to whichever date is chosen -- the file's own when it is
+converted, one read from its name, or the modification time -- and moves it
+on the wall clock, so 17:06 in July stays 17:06 in December even though
+daylight saving has ended in between. Work out the shift on the clock the
+dates are shown in: `--dry-run` prints the date each file would get, so a
+shift can be checked against one file whose real time is known. Files that
+already have a date and need no converting are still skipped, since nothing
+is written to them. It cannot be combined with `--date`; give the right date
+instead.
+
+## Giving undated files a date
+
+A file with no date taken inside it lands in iCloud Photos on the day it was
+uploaded. `media fix-date` writes a dated copy beside it as `NAME_dated.EXT`:
+
+```bash
+isynca media fix-date Scans/                     # every undated file, from its modification time
+isynca media fix-date --date 2009-07-20T15:30 "Scans/beach.jpg"
+isynca media fix-date --date 2009-07-20T15:30+03:00 "Scans/beach.jpg"
+```
+
+Without `--date`, each file's modification time is written, and files that
+already have a date taken are skipped. `--date` writes the given date instead,
+replacing any existing one, and takes a single file only -- one date across a
+folder is never what anyone means. A date with no offset is read as local
+time.
+
+Like `rotate`, nothing is re-encoded and the original is not modified:
+
+* **JPEG** gets `DateTimeOriginal`, `DateTimeDigitized` and their timezone
+  offsets in EXIF. Only the EXIF block is rewritten; the image data is copied
+  byte for byte.
+* **MP4, MOV, M4V and 3GP** get the creation time in their movie and track
+  headers overwritten in place. These headers hold dates from 1904 to 2040.
+  A video that already carries Apple's own capture date is refused, since
+  that date would win over the one written here.
+
+Other formats are refused. An AVI cannot carry a date iCloud reads, and
+iCloud does not take AVI in the first place, so it has to be converted first.
+
+## Rotating sideways videos
+
+Some phones recorded video sideways and never marked which way up it goes.
+`media rotate` writes an upright copy beside each original:
+
+```bash
+isynca media rotate --clockwise 90 "Videos/WP_20121116_173923Z.mp4"
+# -> Videos/WP_20121116_173923Z_rot90.mp4
+isynca media rotate --clockwise 90 --dry-run Videos/*.mp4   # just show it
+```
+
+`--clockwise` takes 90, 180 or 270 and adds to whatever rotation the file
+already has, so 270 is a quarter turn anticlockwise. The copy is named
+`NAME_rot<degrees>.EXT` after the turn you asked for, and an existing file of
+that name is never overwritten. The original is not modified.
+
+Nothing is re-encoded. An MP4 or MOV says how to display each video track with
+a small matrix in its header, and that matrix is the only thing that differs
+in the copy: there is no quality loss, the size is the same, the capture date
+carries over, and so does the file's modification time. Only MP4, MOV, M4V and
+3GP work this way; anything else is reported and skipped.
+
+Both files now sit in the same folder, so a later `photos upload` of that
+folder uploads both. Move or archive the original first if you only want the
+upright one in iCloud. If the ledger shows the original was already uploaded,
+the command says so -- delete that one in Photos once the copy is up.
 
 ## How re-runs stay cheap
 

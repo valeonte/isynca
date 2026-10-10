@@ -81,4 +81,4 @@ def tree(tmp_path: Path) -> Path:
 
 # Metadata-carrying media builders live in tests/media/conftest.py; re-exported
 # here so suites outside tests/media can use them too.
-from tests.media.conftest import make_image, make_video  # noqa: E402, F401
+from tests.media.conftest import ffmpeg, make_image, make_video  # noqa: E402, F401

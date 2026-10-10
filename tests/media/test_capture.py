@@ -2,9 +2,9 @@ import struct
 from datetime import UTC, datetime
 from io import BytesIO
 
+from isynca.media.bmff import iter_boxes
 from isynca.media.capture import (
     APPLE_CREATIONDATE_KEY,
-    _iter_boxes,
     _read_keys,
     read_capture_date,
     read_container_date,
@@ -189,7 +189,7 @@ def test_dispatches_video_to_the_container(make_video):
 
 
 def boxes(handle, start, end):
-    return list(_iter_boxes(handle, start, end))
+    return list(iter_boxes(handle, start, end))
 
 
 def test_iter_boxes_stops_at_a_truncated_header():

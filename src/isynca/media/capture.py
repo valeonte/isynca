@@ -20,7 +20,6 @@ have no timezone, so those come back naive; container dates come back in UTC.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO
@@ -29,6 +28,7 @@ from PIL import Image, UnidentifiedImageError
 from pillow_heif import register_heif_opener
 
 from isynca.logging import get_logger
+from isynca.media.bmff import find_box, iter_boxes
 from isynca.media.types import MediaFile, MediaKind
 
 LOGGER = get_logger("capture")
@@ -96,51 +96,6 @@ def read_exif_date(path: Path) -> datetime | None:
     return None
 
 
-def _iter_boxes(
-    handle: BinaryIO, start: int, end: int
-) -> Iterator[tuple[bytes, int, int]]:
-    """Yield ``(type, body_start, box_end)`` for each ISO-BMFF box in a range.
-
-    Positions are absolute and the file is re-seeked each iteration, so a
-    caller is free to read inside a box before asking for the next one.
-    """
-    position = start
-    while position + 8 <= end:
-        handle.seek(position)
-        header = handle.read(8)
-        if len(header) < 8:
-            return
-
-        size = int.from_bytes(header[:4], "big")
-        box_type = header[4:8]
-        header_length = 8
-
-        if size == 1:
-            extended = handle.read(8)
-            if len(extended) < 8:
-                return
-            size = int.from_bytes(extended, "big")
-            header_length = 16
-        elif size == 0:
-            size = end - position
-
-        if size < header_length or position + size > end:
-            return
-
-        yield box_type, position + header_length, position + size
-        position += size
-
-
-def _find_box(
-    handle: BinaryIO, start: int, end: int, wanted: bytes
-) -> tuple[int, int] | None:
-    """Return the body range of the first ``wanted`` box in a range."""
-    for box_type, body_start, box_end in _iter_boxes(handle, start, end):
-        if box_type == wanted:
-            return body_start, box_end
-    return None
-
-
 def _read_keys(handle: BinaryIO, start: int, end: int) -> list[bytes]:
     """Return the metadata key names declared by a ``keys`` box, in order."""
     handle.seek(start + 4)  # skip the FullBox version and flags
@@ -167,10 +122,10 @@ def _read_creationdate(
     handle: BinaryIO, start: int, end: int, index: int
 ) -> str | None:
     """Return the string value stored in an ``ilst`` entry for ``index``."""
-    for box_type, body_start, box_end in _iter_boxes(handle, start, end):
+    for box_type, body_start, box_end in iter_boxes(handle, start, end):
         if int.from_bytes(box_type, "big") != index:
             continue
-        data = _find_box(handle, body_start, box_end, b"data")
+        data = find_box(handle, body_start, box_end, b"data")
         if data is None:
             return None
         data_start, data_end = data
@@ -181,9 +136,9 @@ def _read_creationdate(
     return None
 
 
-def _apple_creation_date(handle: BinaryIO, start: int, end: int) -> datetime | None:
+def apple_creation_date(handle: BinaryIO, start: int, end: int) -> datetime | None:
     """Return Apple's QuickTime creation date from a ``moov`` box."""
-    meta = _find_box(handle, start, end, b"meta")
+    meta = find_box(handle, start, end, b"meta")
     if meta is None:
         return None
     meta_start, meta_end = meta
@@ -191,8 +146,8 @@ def _apple_creation_date(handle: BinaryIO, start: int, end: int) -> datetime | N
     # QuickTime writes `meta` as a plain box while ISO writes it as a FullBox
     # with a 4-byte version/flags prefix. Try both rather than guess.
     for offset in (0, 4):
-        keys_range = _find_box(handle, meta_start + offset, meta_end, b"keys")
-        ilst_range = _find_box(handle, meta_start + offset, meta_end, b"ilst")
+        keys_range = find_box(handle, meta_start + offset, meta_end, b"keys")
+        ilst_range = find_box(handle, meta_start + offset, meta_end, b"ilst")
         if keys_range is None or ilst_range is None:
             continue
         if keys_range[1] - keys_range[0] > _MAX_METADATA_BOX:
@@ -215,7 +170,7 @@ def _apple_creation_date(handle: BinaryIO, start: int, end: int) -> datetime | N
 
 def _mvhd_creation_date(handle: BinaryIO, start: int, end: int) -> datetime | None:
     """Return the ``mvhd`` creation time from a ``moov`` box."""
-    mvhd = _find_box(handle, start, end, b"mvhd")
+    mvhd = find_box(handle, start, end, b"mvhd")
     if mvhd is None:
         return None
 
@@ -245,10 +200,10 @@ def read_container_date(path: Path) -> datetime | None:
     try:
         size = path.stat().st_size
         with path.open("rb") as handle:
-            moov = _find_box(handle, 0, size, b"moov")
+            moov = find_box(handle, 0, size, b"moov")
             if moov is None:
                 return None
-            return _apple_creation_date(handle, *moov) or _mvhd_creation_date(
+            return apple_creation_date(handle, *moov) or _mvhd_creation_date(
                 handle, *moov
             )
     except OSError as exc:

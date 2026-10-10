@@ -64,12 +64,41 @@ class UploadError(ItemError):
     """Uploading one file to iCloud failed."""
 
 
+class DateError(ItemError):
+    """A date taken could not be written into one file.
+
+    Always raised with ``retryable=False``: an unsupported format or an
+    out-of-range date will be just as unwritable on the next attempt.
+    """
+
+
+class ConvertError(ItemError):
+    """One file could not be converted into a format iCloud Photos takes.
+
+    Always raised with ``retryable=False``: ffmpeg refusing a file once will
+    refuse it the same way again.
+    """
+
+
+class ToolMissingError(FatalError):
+    """An external program isynca relies on, such as ffprobe, is not installed."""
+
+
 class AlbumNotFoundError(FatalError):
     """The requested album does not exist and could not be created."""
 
 
 class ArchiveError(ItemError):
     """One file could not be moved into the archive target."""
+
+
+class RotationError(ItemError):
+    """One video's rotation could not be read or rewritten.
+
+    Always raised with ``retryable=False``: a file that is not an MP4/MOV,
+    holds no video track, or is mirrored will be exactly as unrotatable on the
+    next attempt.
+    """
 
 
 class DriveError(ItemError):
