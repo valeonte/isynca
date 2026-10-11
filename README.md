@@ -317,8 +317,8 @@ It takes folders too, with the same `--no-videos`, `--no-images` and
 | Verdict | Meaning |
 | --- | --- |
 | `ok` | MP4/MOV with H.264, HEVC or ProRes; JPEG, HEIC, PNG, GIF, TIFF, WebP |
-| `unsure` | Plays on some Apple devices only: H.263, DV, AV1, 8-bit PCM audio, AVIF, RAW |
-| `convert` | Will not be taken or will not play: AVI, MPG, WMV, MKV, XviD/DivX, MPEG-1/2, Motion JPEG, MPEG-4 Part 2, AMR audio, and H.264 carrying the colour tags old Motion JPEG cameras write |
+| `unsure` | Plays on some Apple devices only: H.263, DV, AV1, AVIF, RAW |
+| `convert` | Will not be taken or will not play: AVI, MPG, WMV, MKV, XviD/DivX, MPEG-1/2, Motion JPEG, MPEG-4 Part 2, AMR audio, PCM audio as cameras record it (only an iPhone's `lpcm` is taken), and H.264 carrying the colour tags old Motion JPEG cameras write |
 | `unreadable` | Damaged, or not what its name says -- such as a JPEG thumbnail saved as `.MOV` |
 
 The verdicts are informed guesses, not Apple's word: an upload that iCloud
@@ -347,13 +347,14 @@ isynca media fix Videos/
   a file that only needs a new container is just rewrapped. Interlaced video
   is deinterlaced, and an incomplete colour description is completed: old
   Motion JPEG cameras tag only the colour matrix, and iCloud refuses an
-  H.264 file carrying that with "unsupported for transcoding". Images become
+  H.264 file carrying that with "unsupported for transcoding". Camera PCM
+  audio, which iCloud refuses the same way, becomes AAC. Images become
   JPEG at quality 95.
 * **Every converted file gets a date taken**: its own if it has one, or else
   its modification time.
 * **Files that need no converting** but have no date taken get a dated copy,
   `NAME_dated.EXT`, exactly as `fix-date` would write it.
-* **Unsure files** (H.263, DV or AV1 video, 8-bit PCM audio) are only dated.
+* **Unsure files** (H.263, DV or AV1 video) are only dated.
   `--convert-unsure` converts them too.
 * **Unreadable files** are reported and left alone.
 

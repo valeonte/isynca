@@ -47,7 +47,8 @@ _AUDIO_COPY = frozenset({"aac", "alac"})
 """Codecs whose streams may be copied as they are.
 
 Narrower than what :mod:`isynca.media.compat` calls fine: an MP4 cannot hold
-PCM or ProRes the way Apple expects, so those are re-encoded too. A video
+PCM or ProRes the way Apple expects, so those are re-encoded too, which also
+turns camera PCM iCloud refuses into AAC. A video
 stream is copied only if compat also passes its profile.
 """
 

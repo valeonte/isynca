@@ -67,13 +67,20 @@ def test_other_images_need_converting(fmt, named):
     [
         ("h264", "aac"),
         ("hevc", None),
-        ("prores", "pcm_s16le"),
+        ("prores", "aac"),
         ("h264", "mp3"),
         ("hevc", "alac"),
     ],
 )
 def test_apple_friendly_video_is_ok(codec, audio):
     result = assess(video(codec=codec, audio=audio))
+    assert result.verdict is Verdict.OK
+    assert result.reasons == ()
+
+
+@pytest.mark.parametrize("codec", ["pcm_s16le", "pcm_s24le"])
+def test_pcm_audio_as_an_iphone_writes_it_is_ok(codec):
+    result = assess(video(codec="hevc", audio=codec, audio_tag="lpcm"))
     assert result.verdict is Verdict.OK
     assert result.reasons == ()
 
@@ -139,7 +146,28 @@ def test_patchily_supported_video_is_unsure(codec):
 
 
 def test_8_bit_pcm_audio_is_unsure():
-    assert assess(video(audio="pcm_u8")).verdict is Verdict.UNSURE
+    assert assess(video(audio="pcm_u8", audio_tag="lpcm")).verdict is Verdict.UNSURE
+
+
+@pytest.mark.parametrize(
+    ("codec", "tag"),
+    [
+        ("pcm_s16be", "twos"),
+        ("pcm_s16le", "sowt"),
+        ("pcm_u8", "raw "),
+        ("pcm_s16le", None),
+    ],
+)
+def test_camera_pcm_audio_needs_converting(codec, tag):
+    """A Pentax MOV of H.264 with twos PCM was refused; no accepted upload had any."""
+    result = assess(
+        video(codec="h264", video_profile="High", audio=codec, audio_tag=tag)
+    )
+    assert result.verdict is Verdict.CONVERT
+    assert result.reasons == (
+        f"iCloud refuses PCM audio tagged {(tag or 'unknown').strip()}, as cameras "
+        f"record it; only an iPhone's lpcm is taken",
+    )
 
 
 @pytest.mark.parametrize("audio", ["amr_nb", "amr_wb"])
@@ -160,12 +188,12 @@ def test_unknown_codecs_need_converting():
 
 def test_motion_jpeg_needs_converting():
     """An Olympus MJPEG MOV was refused by iCloud; none was ever accepted."""
-    result = assess(video(codec="mjpeg", audio="pcm_u8"))
+    result = assess(video(codec="mjpeg", audio="pcm_u8", audio_tag="raw "))
     assert result.verdict is Verdict.CONVERT
     assert result.reasons[0] == (
         "iCloud refuses Motion JPEG video, as early digital cameras recorded it"
     )
-    assert "8-bit PCM" in result.reasons[1]
+    assert "PCM audio tagged raw" in result.reasons[1]
 
 
 def test_the_worst_finding_decides_and_every_reason_is_kept():
