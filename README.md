@@ -433,8 +433,22 @@ daylight saving has ended in between. Work out the shift on the clock the
 dates are shown in: `--dry-run` prints the date each file would get, so a
 shift can be checked against one file whose real time is known. Files that
 already have a date and need no converting are still skipped, since nothing
-is written to them. It cannot be combined with `--date`; give the right date
-instead.
+is written to them -- unless that date is wrong too; see below. It cannot be
+combined with `--date`; give the right date instead.
+
+Some cameras also stamp every file with the same bogus date taken -- one
+brand-new camera wrote 2003-01-31 16:06 into every clip -- so those files
+look dated and are skipped. `--replace`, on both `fix` and `fix-date`,
+treats every file as undated: its own date is ignored, and the modification
+time (or `--date-from-name`) is used instead, shifted as asked:
+
+```bash
+# a camera unboxed on 5 Nov 2010 at 23:00 started its clock at 2010-01-01 00:00
+isynca media fix-date --replace --shift-date 308.23:00 "Videos/201011Gamos/"
+```
+
+The report ends with the date each file had, as `was ...`. `--replace` cannot
+be combined with `--date`, which replaces the date already.
 
 ## Giving undated files a date
 

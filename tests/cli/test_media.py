@@ -7,6 +7,7 @@ from PIL import Image
 
 from isynca.ledger.hashing import hash_file
 from isynca.ledger.store import Ledger, UploadStatus
+from isynca.media.capture import read_container_date
 from isynca.media.dating import dated_path, modification_time
 from isynca.media.rotate import read_rotation
 from tests.media.conftest import box, mvhd, trak
@@ -749,3 +750,86 @@ def test_a_shift_cannot_be_combined_with_a_date(invoke, capture_avi, command):
     )  # fmt: skip
     assert result.exit_code == 2
     assert "cannot be combined with --date" in result.output
+
+
+# --- replacing a wrong date --------------------------------------------------
+
+
+def test_fix_date_replaces_a_bogus_date_with_the_shifted_modification_time(
+    invoke, tmp_path, london
+):
+    """The Gamos case: a new camera stamps 2003 and starts its clock at 2010-01-01."""
+    clip = tmp_path / "SDV_0032.MP4"
+    clip.write_bytes(box(b"ftyp", b"avc1") + box(b"moov", mvhd(3_126_873_960) + trak()))
+    os.utime(clip, (1_262_399_900, 1_262_399_900))  # 2010-01-02 04:38:20 in Athens
+
+    result = invoke(
+        "media", "fix-date", "--replace", "--shift-date", "308.23:00", str(clip)
+    )
+    assert result.exit_code == 0, result.output
+    # 03:38 in Athens, which is two hours ahead of London in November.
+    assert (
+        "(taken 2010-11-07 01:38 +0000, from its modification time, "
+        "moved +308.23:00; was 2003-01-31 16:06)" in result.output
+    )
+    assert read_container_date(dated_path(clip)) == datetime(
+        2010, 11, 7, 1, 38, 20, tzinfo=UTC
+    )
+
+
+def test_fix_date_replaces_a_date_with_one_read_from_the_name(
+    invoke, tmp_path, make_image
+):
+    path = make_image("scan.06-06-30_20-47.00.jpg", original="2001:01:01 00:00:00")
+    result = invoke(
+        "media", "fix-date", "--replace", "--date-from-name", CAPTURE,
+        "--timezone", "Europe/Athens", str(path),
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "(taken 2006-06-30 20:47 +0300, from its name; was 2001-01-01 00:00)" in (
+        result.output
+    )
+    assert exif_taken(dated_path(path)) == "2006:06:30 20:47:00"
+
+
+def test_fix_replaces_the_date_of_a_file_it_only_dates(invoke, tmp_path, make_image):
+    path = make_image("phone.jpg", original="2001:01:01 00:00:00")
+    os.utime(path, (1_121_853_364, 1_121_853_364))
+    result = invoke("media", "fix", "--replace", str(path))
+    assert result.exit_code == 0, result.output
+    assert "from its modification time; was 2001-01-01 00:00" in result.output
+    expected = modification_time(path)
+    assert exif_taken(dated_path(path)) == f"{expected:%Y:%m:%d %H:%M:%S}"
+
+
+def test_fix_replaces_the_own_date_of_a_file_it_converts(
+    invoke, tmp_path, ffprobe_reports, ffmpeg
+):
+    mkv = tmp_path / "clip.mkv"
+    mkv.write_bytes(b"x")
+    os.utime(mkv, (1_121_853_364, 1_121_853_364))  # 2005-07-20 09:56:04 UTC
+    ffprobe_reports(
+        {
+            mkv.name: {
+                "format": {
+                    "format_name": "matroska,webm",
+                    "tags": {"creation_time": "2003-01-31T16:06:00Z"},
+                },
+                "streams": [{"codec_type": "video", "codec_name": "vp9"}],
+            }
+        }
+    )
+    instances = ffmpeg()
+    result = invoke("media", "fix", "--replace", str(mkv))
+    assert result.exit_code == 0, result.output
+    assert "from its modification time)" in result.output
+    assert "creation_time=2005-07-20T09:56:04Z" in instances[0].command
+
+
+@pytest.mark.parametrize("command", ["fix", "fix-date"])
+def test_replace_cannot_be_combined_with_a_date(invoke, capture_avi, command):
+    result = invoke(
+        "media", command, "--date", "2008-12-21T17:06", "--replace", str(capture_avi)
+    )
+    assert result.exit_code == 2
+    assert "which replaces the date already" in result.output

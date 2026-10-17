@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
-import click
 import typer
 from rich.console import Console
 
@@ -133,11 +132,17 @@ def main() -> int:
         return 1
     except typer.Exit as exc:
         return exc.exit_code
-    except click.ClickException as exc:
-        exc.show()
-        return exc.exit_code
-    except click.exceptions.Abort:
+    except typer.Abort:
         Console(stderr=True).print("[yellow]Aborted.[/yellow]")
         return 130
+    except typer.TyperException as exc:
+        # Typer bundles its own click, whose usage errors derive from this
+        # rather than from the click package's ClickException.
+        show = getattr(exc, "show", None)
+        if callable(show):
+            show()
+        else:
+            Console(stderr=True).print(f"[red]Error:[/red] {exc}")
+        return exc.exit_code
     else:
         return result if isinstance(result, int) else 0

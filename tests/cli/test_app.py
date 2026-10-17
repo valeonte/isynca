@@ -1,4 +1,3 @@
-import click
 import pytest
 import typer
 from rich.console import Console
@@ -103,9 +102,17 @@ def test_main_ignores_a_non_integer_return(monkeypatch):
     assert main() == 0
 
 
-def test_main_renders_click_exceptions(monkeypatch, capsys):
+def test_main_renders_a_usage_error_without_a_traceback(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["isynca", "--no-such-option"])
+    assert main() == 2
+    err = capsys.readouterr().err
+    assert "No such option: --no-such-option" in err
+    assert "Traceback" not in err
+
+
+def test_main_renders_a_bare_typer_exception(monkeypatch, capsys):
     def boom(**kwargs):
-        raise click.ClickException("bad usage")
+        raise typer.TyperException("bad usage")
 
     monkeypatch.setattr("isynca.cli.app.app", boom)
     assert main() == 1
@@ -114,7 +121,7 @@ def test_main_renders_click_exceptions(monkeypatch, capsys):
 
 def test_main_handles_abort(monkeypatch, capsys):
     def boom(**kwargs):
-        raise click.exceptions.Abort
+        raise typer.Abort
 
     monkeypatch.setattr("isynca.cli.app.app", boom)
     assert main() == 130
