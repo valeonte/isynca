@@ -196,7 +196,8 @@ def archive(
     Each file that iCloud confirms -- newly uploaded or already there -- is
     moved under the target, keeping its path relative to the source it was
     found under. A file whose upload was accepted but not yet indexed is left
-    where it is, and an existing file at the destination is never overwritten.
+    where it is, and is sent again on a later run so iCloud can confirm it. An
+    existing file at the destination is never overwritten.
 
     Folders under the sources that the move leaves empty are removed;
     ``--no-prune-empty-dirs`` keeps the empty structure standing. The sources

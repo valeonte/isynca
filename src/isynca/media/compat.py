@@ -13,10 +13,12 @@ known to decode:
   cameras and phones: Motion JPEG (an Olympus MOV was rejected) and MPEG-4
   Part 2 in any profile (BlackBerry 3GPs were rejected). Not one of several
   thousand accepted uploads used either.
-* **Audio.** AAC, ALAC, MP3, AC-3 and signed PCM are safe. 8-bit PCM from
-  early cameras is doubtful. AMR phone audio is refused -- it came in the
-  same rejected 3GPs, and no accepted upload carries it. Anything else is not
-  decoded.
+* **Audio.** AAC, ALAC, MP3 and AC-3 are safe. PCM is taken only as an
+  iPhone writes it, under the ``lpcm`` tag; the ``twos``, ``sowt`` and
+  ``raw`` PCM of Pentax, Nikon, Canon and Olympus cameras is refused (a
+  Pentax MOV of plain H.264 was rejected, and no accepted upload carries
+  it). AMR phone audio is refused -- it came in the same rejected 3GPs, and
+  no accepted upload carries it. Anything else is not decoded.
 * **Colour.** H.264 tagged with a bt470bg matrix but no primaries -- from
   old Motion JPEG cameras via a re-encode, or straight from a Nikon DSLR --
   is refused outright, so it has to be re-encoded.
@@ -97,6 +99,7 @@ _VIDEO_REFUSED: dict[str, str] = {
 _MPEG4_SIMPLE = "Simple Profile"
 
 _AUDIO_OK = frozenset({"aac", "alac", "mp3", "ac3", "eac3"})
+_APPLE_PCM_TAG = "lpcm"
 _AUDIO_UNSURE: dict[str, str] = {
     "pcm_u8": "8-bit PCM audio from early cameras may play silent or not at all",
 }
@@ -166,7 +169,7 @@ def _assess_video(info: MediaInfo) -> Assessment:
             ),
         )
 
-    findings = [judge_video_stream(info), judge_audio_stream(info.audio_codec)]
+    findings = [judge_video_stream(info), judge_audio_stream(info)]
     streams_fine = all(verdict is Verdict.OK for verdict, _ in findings)
     if info.container != ISO_BMFF:
         remedy = (
@@ -250,9 +253,19 @@ def _judge_profile(codec: str, profile: str | None) -> tuple[Verdict, str]:
     return Verdict.CONVERT, f"{name} video in {profile} does not play on Apple devices"
 
 
-def judge_audio_stream(codec: str | None) -> tuple[Verdict, str]:
-    """Return the verdict on an audio stream's codec, and why; silence is fine."""
-    if codec is None or codec in _AUDIO_OK or codec.startswith("pcm_s"):
+def judge_audio_stream(info: MediaInfo) -> tuple[Verdict, str]:
+    """Return the verdict on a file's audio stream, and why; silence is fine."""
+    codec = info.audio_codec
+    if codec is None or codec in _AUDIO_OK:
+        return Verdict.OK, ""
+    if codec.startswith("pcm_") and info.audio_tag != _APPLE_PCM_TAG:
+        return (
+            Verdict.CONVERT,
+            f"iCloud refuses PCM audio tagged "
+            f"{(info.audio_tag or '').strip() or 'unknown'}, as cameras record "
+            f"it; only an iPhone's lpcm is taken",
+        )
+    if codec.startswith("pcm_s"):
         return Verdict.OK, ""
     if codec in _AUDIO_UNSURE:
         return Verdict.UNSURE, _AUDIO_UNSURE[codec]

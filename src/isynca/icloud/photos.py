@@ -19,7 +19,9 @@ not indexed in time, and re-sending them on the next run would buy nothing.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import tempfile
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
@@ -64,6 +66,15 @@ _STATUS_HINTS: dict[int, str] = {
 
 PRIMARY_ZONE_NAME = str(PRIMARY_ZONE["zoneName"])
 """The CloudKit zone holding the account's own library."""
+
+_ACCEPTED_SUFFIXES: dict[str, str] = {".m4v": ".mp4"}
+"""Extensions iCloud refuses by name alone, and the one to send instead.
+
+Apple judges the file type from the name: an M4V of plain H.264 and AAC is
+refused with 415 "unsupported file type", and the very same bytes go through
+once they are called MP4 or MOV. The brand inside does not matter -- accepted
+uploads include MP4s branded QuickTime or M4V and MOVs branded mp42.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,14 +175,17 @@ class PhotosUploader:
         """
         album = self.ensure_album()
         client = _direct_client(self.service)
-        if client is not None:
-            return self._register(client, path)
-        return self._upload_and_wait(path, album)
+        with _under_accepted_name(path) as sent:
+            if client is not None:
+                return self._register(client, path, sent)
+            return self._upload_and_wait(path, sent, album)
 
-    def _register(self, client: DirectUploadLike, path: Path) -> UploadOutcome:
+    def _register(
+        self, client: DirectUploadLike, path: Path, sent: Path
+    ) -> UploadOutcome:
         """Store the bytes and return as soon as Apple has named the records."""
         try:
-            result = client.upload_file(str(path), zone_name=PRIMARY_ZONE_NAME)
+            result = client.upload_file(str(sent), zone_name=PRIMARY_ZONE_NAME)
         except CloudKitApiError as exc:
             raise UploadError(
                 f"Upload of {path} failed: {_describe(exc)}",
@@ -224,10 +238,12 @@ class PhotosUploader:
                 retryable=_is_retryable(exc),
             ) from exc
 
-    def _upload_and_wait(self, path: Path, album: str | None) -> UploadOutcome:
+    def _upload_and_wait(
+        self, path: Path, sent: Path, album: str | None
+    ) -> UploadOutcome:
         """Upload through pyicloud's public call, which waits for indexing."""
         try:
-            asset = self.service.upload(str(path), album=album)
+            asset = self.service.upload(str(sent), album=album)
         except PyiCloudAPIResponseException as exc:
             if _looks_like_duplicate(exc):
                 LOGGER.debug("iCloud already holds %s", path.name)
@@ -247,6 +263,34 @@ class PhotosUploader:
             master_id=asset.master_id,
             asset_id=asset.id,
         )
+
+
+@contextmanager
+def _under_accepted_name(path: Path) -> Iterator[Path]:
+    """Yield a path to ``path``'s bytes under a name iCloud will take.
+
+    pyicloud names the asset after the file it is handed and has no way to
+    say otherwise, so an extension Apple refuses is swapped through a symlink
+    in a scratch directory. The file itself is never renamed.
+
+    Raises:
+        UploadError: The scratch directory or the symlink could not be made.
+    """
+    suffix = _ACCEPTED_SUFFIXES.get(path.suffix.lower())
+    if suffix is None:
+        yield path
+        return
+    if path.suffix.isupper():
+        suffix = suffix.upper()
+    try:
+        scratch = tempfile.TemporaryDirectory(prefix="isynca-")
+        alias = Path(scratch.name) / path.with_suffix(suffix).name
+        alias.symlink_to(path.absolute())
+    except OSError as exc:
+        raise UploadError(f"Could not stage {path} for upload: {exc}") from exc
+    with scratch:
+        LOGGER.debug("Sending %s to iCloud as %s", path.name, alias.name)
+        yield alias
 
 
 def _transport_error(doing: str, exc: BaseException) -> UploadError:

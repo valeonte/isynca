@@ -75,7 +75,11 @@ def test_reads_streams_from_the_ffprobe_report(junk_video, ffprobe_says):
                     "height": 480,
                     "field_order": "progressive",
                 },
-                {"codec_type": "audio", "codec_name": "mp2"},
+                {
+                    "codec_type": "audio",
+                    "codec_name": "mp2",
+                    "codec_tag_string": "P[0][0][0]",
+                },
             ],
         }
     )
@@ -86,7 +90,7 @@ def test_reads_streams_from_the_ffprobe_report(junk_video, ffprobe_says):
         "mpeg4",
         "Advanced Simple Profile",
     )
-    assert info.audio_codec == "mp2"
+    assert (info.audio_codec, info.audio_tag) == ("mp2", "P[0][0][0]")
     assert (info.width, info.height, info.rotation) == (640, 480, 0)
     assert info.taken is None
 

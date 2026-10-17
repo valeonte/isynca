@@ -7,23 +7,40 @@ its recorded hash rather than being read again.
 
 It is also where an optional capture-date requirement is enforced, so a file
 with no "date taken" is reported and held back before anything is uploaded.
+
+A ledger hit does not always mean the file is done. An ``UNVERIFIED`` record
+-- bytes accepted, no record names returned -- is planned again once it has
+had time to settle. iCloud cannot be asked about content it never named: no
+CloudKit query matches on a checksum or a filename. The registration step
+can, though, because it de-duplicates on content, so re-sending the file is
+the check. It answers ``DUPLICATE`` if the first upload landed, or a fresh
+``CONFIRMED`` if it did not, and either one lets an archive run move the file.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
 from isynca.ledger.hashing import hash_file
-from isynca.ledger.store import Ledger, UploadRecord
+from isynca.ledger.store import Ledger, UploadRecord, UploadStatus
 from isynca.logging import get_logger
 from isynca.media.capture import read_capture_date
 from isynca.media.types import MediaFile
 
 LOGGER = get_logger("planner")
+
+RECHECK_AFTER = timedelta(hours=1)
+"""How long an unverified upload is left alone before it is re-sent.
+
+Apple may still be ingesting a file for a while after accepting it, and a
+second copy sent during that window is not certain to be recognised as the
+same content. Indexing normally finishes within 20 seconds, so an hour leaves
+a wide margin while still letting the next day's run settle the file.
+"""
 
 
 class SkipReason(StrEnum):
@@ -40,6 +57,13 @@ class PlannedUpload:
 
     media: MediaFile
     content_hash: str
+    previous: UploadRecord | None = None
+    """The unverified record this upload re-checks, if it is a re-check."""
+
+    @property
+    def is_recheck(self) -> bool:
+        """Return whether this upload re-sends a file iCloud never confirmed."""
+        return self.previous is not None
 
     @property
     def path(self) -> Path:
@@ -88,10 +112,14 @@ class Planner:
         ledger: Ledger,
         require_capture_date: bool = False,
         date_reader: Callable[[MediaFile], datetime | None] = read_capture_date,
+        recheck_after: timedelta = RECHECK_AFTER,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._ledger = ledger
         self._require_capture_date = require_capture_date
         self._date_reader = date_reader
+        self._recheck_after = recheck_after
+        self._clock = clock
 
     def content_hash(self, media: MediaFile) -> str:
         """Return ``media``'s content hash, reusing the cache when valid."""
@@ -114,7 +142,7 @@ class Planner:
             )
 
         record = self._ledger.lookup(digest)
-        if record is not None:
+        if record is not None and not self._due_for_recheck(record):
             # Checked before the capture date on purpose: iCloud already holds
             # this file, so blocking it now would achieve nothing and would
             # keep an archive run from filing it away.
@@ -122,11 +150,22 @@ class Planner:
                 media=media, reason=SkipReason.ALREADY_UPLOADED, record=record
             )
 
+        # A re-check is not exempt: the first upload may never have landed,
+        # in which case this one creates the asset, and an undated file must
+        # not get in that way when the requirement is on.
         if self._require_capture_date and self._date_reader(media) is None:
             LOGGER.warning("No capture date in %s", media.path)
             return SkippedUpload(media=media, reason=SkipReason.MISSING_DATE)
 
-        return PlannedUpload(media=media, content_hash=digest)
+        if record is not None:
+            LOGGER.debug("Re-checking %s: iCloud never confirmed it", media.path)
+        return PlannedUpload(media=media, content_hash=digest, previous=record)
+
+    def _due_for_recheck(self, record: UploadRecord) -> bool:
+        """Return whether ``record`` is unverified and old enough to re-send."""
+        if record.status is not UploadStatus.UNVERIFIED:
+            return False
+        return self._clock() - record.uploaded_at >= self._recheck_after
 
     def plan(self, media_files: Iterable[MediaFile]) -> UploadPlan:
         """Build a full :class:`UploadPlan` from discovered media."""

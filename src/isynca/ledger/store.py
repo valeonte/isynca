@@ -8,9 +8,9 @@ already uploaded.
 
 Upload status is deliberately three-valued. pyicloud returns ``None`` when a
 file uploaded successfully but CloudKit had not finished indexing it before
-the hydration timeout -- that is not a failure, and re-uploading would waste
-the transfer, so it is recorded as ``UNVERIFIED`` and still suppresses a
-retry.
+the hydration timeout -- that is not a failure, so it is recorded as
+``UNVERIFIED`` and suppresses an immediate retry. A later run re-sends it to
+settle the question; see :mod:`isynca.sync.planner`.
 """
 
 from __future__ import annotations

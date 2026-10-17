@@ -66,6 +66,16 @@ def test_summary_rows_include_every_metric():
     assert "Mode" not in labels
 
 
+def test_rechecks_are_counted_and_shown():
+    report = RunReport()
+    report.record_recheck()
+    report.record_status(UploadStatus.DUPLICATE, 10)
+
+    assert report.rechecked == 1
+    assert report.uploaded == 1, "a re-check is counted by its outcome as well"
+    assert dict(report.summary_rows())["Re-checked (was not indexed)"] == "1"
+
+
 def test_dry_run_is_announced_first():
     rows = RunReport(dry_run=True).summary_rows()
     assert rows[0][0] == "Mode"

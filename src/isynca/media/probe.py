@@ -52,6 +52,9 @@ class MediaInfo:
     video_codec: str | None = None
     video_profile: str | None = None
     audio_codec: str | None = None
+    audio_tag: str | None = None
+    """The audio stream's four-character code, such as ``lpcm`` or ``sowt``."""
+
     width: int | None = None
     height: int | None = None
     rotation: int = 0
@@ -124,6 +127,7 @@ def _probe_video(media: MediaFile) -> MediaInfo:
         video_codec=video.get("codec_name"),
         video_profile=video.get("profile"),
         audio_codec=audio.get("codec_name"),
+        audio_tag=audio.get("codec_tag_string"),
         width=video.get("width"),
         height=video.get("height"),
         rotation=_rotation(video),
