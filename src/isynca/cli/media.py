@@ -86,6 +86,18 @@ ShiftOpt = Annotated[
         show_default=False,
     ),
 ]
+ReplaceOpt = Annotated[
+    bool,
+    typer.Option(
+        "--replace",
+        help=(
+            "Treat files as having no date taken, so a wrong one is replaced "
+            "by the modification time or --date-from-name, after any "
+            "--shift-date. For a camera that stamps every file with the same "
+            "bogus date."
+        ),
+    ),
+]
 TimezoneOpt = Annotated[
     str | None,
     typer.Option(
@@ -276,6 +288,7 @@ def fix_date(
     date_from_name: DateFromNameOpt = None,
     timezone: TimezoneOpt = None,
     shift_date: ShiftOpt = None,
+    replace: ReplaceOpt = False,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Show what would be written, writing nothing."),
@@ -297,8 +310,12 @@ def fix_date(
     --shift-date moves the date written, by whole days such as 1267 or by
     D.HH:MM such as 1267.21:37, for a camera whose clock was set wrong. It
     moves the wall clock, so whole days keep the time of day.
+
+    --replace treats every file as undated, so one that already has a date
+    taken is dated again from its modification time or its name, shifted as
+    asked. It is for a camera that stamps a fixed, wrong date on everything.
     """
-    dating = _date_options(date, date_from_name, timezone, shift_date, sources)
+    dating = _date_options(date, date_from_name, timezone, shift_date, replace, sources)
     app_ctx = get_context(ctx)
     scanner = build_scanner(app_ctx.config)
 
@@ -325,6 +342,8 @@ class _Dating:
     override: datetime | None = None
     names: NamePattern | None = None
     shift: timedelta = timedelta(0)
+    replace: bool = False
+    """Whether a file's own date taken is ignored, as if it had none."""
 
 
 def _choose_date(
@@ -333,12 +352,15 @@ def _choose_date(
     """Return the date to write, where it came from, and whether it is shown local.
 
     An explicit date wins outright. Otherwise the file's own date is used,
-    then one read from its name, then its modification time, and the shift
-    applies to whichever it was. A file's own date reads best on this
-    machine's clock; the others are shown in their own zone, as given.
+    unless it is being replaced, then one read from its name, then its
+    modification time, and the shift applies to whichever it was. A file's
+    own date reads best on this machine's clock; the others are shown in
+    their own zone, as given.
     """
     if dating.override is not None:
         return dating.override, "the given date", False
+    if dating.replace:
+        own = None
     if own is not None:
         when, origin = own + dating.shift, "its own date"
     elif dating.names is not None:
@@ -362,6 +384,7 @@ def _date_options(
     date_from_name: str | None,
     timezone: str | None,
     shift_date: str | None,
+    replace: bool,
     sources: list[Path],
 ) -> _Dating:
     """Return how the date options say dates should be chosen."""
@@ -373,6 +396,11 @@ def _date_options(
         raise typer.BadParameter(
             "cannot be combined with --date; give the right date instead",
             param_hint="--shift-date",
+        )
+    if date is not None and replace:
+        raise typer.BadParameter(
+            "cannot be combined with --date, which replaces the date already",
+            param_hint="--replace",
         )
     shift = timedelta(0)
     if shift_date is not None:
@@ -398,7 +426,7 @@ def _date_options(
             names = NamePattern.parse(date_from_name, zone)
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="--date-from-name") from exc
-    return _Dating(override=override, names=names, shift=shift)
+    return _Dating(override=override, names=names, shift=shift, replace=replace)
 
 
 def _parse_override(
@@ -432,7 +460,7 @@ def _fix_one(
 ) -> None:
     """Date one file and report it, warning if iCloud holds the undated version."""
     before = read_capture_date(media)
-    if dating.override is None and before is not None:
+    if dating.override is None and not dating.replace and before is not None:
         app_ctx.console.print(
             f"[dim]Skipped {media.path}: already taken {_local(before)}[/dim]"
         )
@@ -482,6 +510,7 @@ def fix(
     date_from_name: DateFromNameOpt = None,
     timezone: TimezoneOpt = None,
     shift_date: ShiftOpt = None,
+    replace: ReplaceOpt = False,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Show what would be written, writing nothing."),
@@ -501,10 +530,11 @@ def fix(
     replacing any date it already has, whether it is converted or only dated.
 
     --date-from-name reads the date of files that have none from their names
-    instead of using the modification time, and --shift-date moves whatever
-    date is written, both as with fix-date.
+    instead of using the modification time, --shift-date moves whatever
+    date is written, and --replace ignores the dates files already have, all
+    as with fix-date.
     """
-    dating = _date_options(date, date_from_name, timezone, shift_date, sources)
+    dating = _date_options(date, date_from_name, timezone, shift_date, replace, sources)
     app_ctx = get_context(ctx)
     scanner = build_scanner(app_ctx.config)
 
