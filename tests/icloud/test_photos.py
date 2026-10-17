@@ -38,6 +38,54 @@ def test_upload_registers_into_the_primary_zone(session):
     assert session.photos_service.direct_client.zones == ["PrimarySync"]
 
 
+@pytest.mark.parametrize("direct", [True, False])
+@pytest.mark.parametrize(
+    ("name", "sent_as"), [("clip.m4v", "clip.mp4"), ("CLIP.M4V", "CLIP.MP4")]
+)
+def test_m4v_is_sent_under_a_name_icloud_takes(
+    session, tmp_path, direct, name, sent_as
+):
+    """Apple refuses M4V by name, though it takes the same bytes as MP4."""
+    session.photos_service.has_direct_client = direct
+    original = tmp_path / name
+    original.write_bytes(b"movie bytes")
+    seen = []
+    record = session.photos_service.next_result
+
+    def reading_result(path, *, album):
+        seen.append((Path(path).name, Path(path).read_bytes()))
+        return record(path, album=album)
+
+    session.photos_service.next_result = reading_result
+    outcome = PhotosUploader(session).upload(original)
+
+    assert outcome.status is UploadStatus.CONFIRMED
+    assert seen == [(sent_as, b"movie bytes")]
+    assert original.exists()
+    assert not Path(session.photos_service.uploaded[0][0]).parent.exists()
+
+
+def test_failure_on_a_renamed_upload_names_the_original(session, tmp_path):
+    original = tmp_path / "clip.m4v"
+    original.write_bytes(b"movie bytes")
+    session.photos_service.upload_results = [cloudkit_error("putAsset rejected it")]
+
+    with pytest.raises(UploadError, match=r"Upload of .*clip\.m4v failed"):
+        PhotosUploader(session).upload(original)
+
+
+def test_a_rename_that_cannot_be_staged_is_an_upload_error(
+    session, tmp_path, monkeypatch
+):
+    def refuse(self, target):
+        raise OSError(errno.EPERM, "symlinks not allowed")
+
+    monkeypatch.setattr(Path, "symlink_to", refuse)
+    with pytest.raises(UploadError, match=r"Could not stage .*clip\.m4v"):
+        PhotosUploader(session).upload(tmp_path / "clip.m4v")
+    assert session.photos_service.uploaded == []
+
+
 def test_existing_album_is_reused(session):
     album = FakeAlbum("Trip")
     session.photos_service.album_container.albums["Trip"] = album
